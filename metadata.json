@@ -1,0 +1,5 @@
+{
+  "name": "Coaching Chameleon",
+  "description": "A voice coaching lab with an adaptable mascot for various coaching scenarios.",
+  "requestFramePermissions": ["microphone"]
+}
