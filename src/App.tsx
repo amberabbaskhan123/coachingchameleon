@@ -3,11 +3,12 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useRef } from 'react';
-import { Mic, MicOff, Settings, Sparkles, ChevronDown } from 'lucide-react';
+import { useState, useRef, useEffect } from 'react';
+import { Mic, MicOff, Settings, Sparkles, ChevronDown, Wand2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { GoogleGenAI, Modality, LiveServerMessage } from "@google/genai";
 import { customRubric } from './rubric';
+import { scenarios } from './scenarios';
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
 
@@ -39,10 +40,32 @@ export default function App() {
   const [transcript, setTranscript] = useState<string>('');
   const [evaluationResults, setEvaluationResults] = useState<any>(null);
   const [isConnected, setIsConnected] = useState(false);
+  const [duration, setDuration] = useState(10);
+  const [timeLeft, setTimeLeft] = useState(0);
   const [scenario, setScenario] = useState('');
   const [isScenarioConfirmed, setIsScenarioConfirmed] = useState(false);
   const [voice, setVoice] = useState('Zephyr');
   const sessionRef = useRef<any>(null);
+
+  const handleWildcard = async () => {
+    setScenario("Generating wildcard scenario...");
+    try {
+      const response = await ai.models.generateContent({
+        model: "gemini-3.1-pro-preview",
+        contents: `Generate a diverse and challenging coaching scenario for a roleplay session. 
+        Use these existing scenarios as reference points for style and depth: 
+        ${JSON.stringify(scenarios)}. 
+        Return only the scenario title, summary, and persona in a JSON object with keys: title, summary, persona.`,
+        config: { responseMimeType: "application/json" }
+      });
+      
+      const wildcardScenario = JSON.parse(response.text!);
+      setScenario(`${wildcardScenario.title}\n\nSummary: ${wildcardScenario.summary}\n\nPersona: ${wildcardScenario.persona}`);
+    } catch (e) {
+      console.error("Failed to generate wildcard scenario:", e);
+      setScenario("Failed to generate scenario. Please try again.");
+    }
+  };
 
   const audioContext = useRef<AudioContext | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -50,6 +73,21 @@ export default function App() {
 
   const [logs, setLogs] = useState<string[]>([]);
   const addLog = (msg: string) => setLogs(prev => [...prev.slice(-4), msg]);
+
+  // Timer effect
+  useEffect(() => {
+    if (!isConnected || timeLeft <= 0) return;
+    const timer = setInterval(() => {
+      setTimeLeft(prev => {
+        if (prev <= 1) {
+          stopSession();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [isConnected, timeLeft]);
 
   const nextStartTime = useRef<number>(0);
 
@@ -105,6 +143,7 @@ export default function App() {
     try {
       addLog("Connecting...");
       setTranscript(''); // Reset transcript
+      setTimeLeft(duration * 60);
       const sessionPromise = ai.live.connect({
         model: "gemini-2.5-flash-native-audio-preview-09-2025",
         callbacks: {
@@ -375,7 +414,12 @@ You must follow these 4 phases sequentially based on the conversation's progress
     }
   };
 
+  const isStopping = useRef(false);
+
   const stopSession = async () => {
+    if (isStopping.current) return;
+    isStopping.current = true;
+
     if (sessionRef.current) {
         sessionRef.current.close();
         sessionRef.current = null;
@@ -414,6 +458,7 @@ You must follow these 4 phases sequentially based on the conversation's progress
       addLog("Evaluation error: " + e);
       console.error("Evaluation error:", e);
       alert("Session ended, but evaluation failed. Check console for details.");
+      isStopping.current = false;
     }
   };
 
@@ -444,8 +489,20 @@ You must follow these 4 phases sequentially based on the conversation's progress
             >
                 {isScenarioConfirmed ? "Scenario Confirmed" : "Confirm Scenario"}
             </button>
+            <button 
+                onClick={handleWildcard}
+                disabled={isScenarioConfirmed}
+                className="w-full p-3 rounded-xl bg-emerald-900/30 border border-emerald-800 text-emerald-200 hover:bg-emerald-900/50 transition disabled:opacity-50 flex items-center justify-center gap-2"
+            >
+                <Wand2 size={16} /> Wildcard Scenario
+            </button>
             <select className="w-full p-3 rounded-xl bg-zinc-900 border border-zinc-800 text-zinc-100" onChange={(e) => setVoice(e.target.value)}>
                 {VOICES.map(v => <option key={v.name} value={v.name}>{v.name} - {v.desc}</option>)}
+            </select>
+            <select className="w-full p-3 rounded-xl bg-zinc-900 border border-zinc-800 text-zinc-100" value={duration} onChange={(e) => setDuration(Number(e.target.value))} disabled={isScenarioConfirmed}>
+                <option value={10}>10 Minutes</option>
+                <option value={20}>20 Minutes</option>
+                <option value={30}>30 Minutes</option>
             </select>
         </div>
 
@@ -473,6 +530,7 @@ You must follow these 4 phases sequentially based on the conversation's progress
           ) : (
             <motion.div key="active" initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.9 }} className="text-center">
               <h2 className="text-3xl font-bold text-emerald-400 animate-pulse">Session Active</h2>
+              <p className="text-xl mt-2">{Math.floor(timeLeft / 60)}:{String(timeLeft % 60).padStart(2, '0')} remaining</p>
               <div className="mt-4 text-xs text-zinc-500 font-mono text-left bg-zinc-900 p-3 rounded-lg">
                 {logs.map((log, i) => <div key={i}>{log}</div>)}
               </div>
