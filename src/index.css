@@ -60,6 +60,10 @@
   color: #0f172a !important;
 }
 
+[data-theme="light"] .force-white {
+  color: #ffffff !important;
+}
+
 [data-theme="light"] .border-zinc-800 {
   border-color: #d1d5db !important;
 }

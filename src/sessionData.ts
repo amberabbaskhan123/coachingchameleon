@@ -3,6 +3,15 @@ export type EvaluationMetric = {
   metric: string;
   score: number;
   comments: string;
+  confidence?: number;
+  evidence?: string[];
+  calibrationNote?: string;
+};
+
+export type EvaluationCalibration = {
+  alignmentScore: number;
+  benchmark: string;
+  notes: string[];
 };
 
 export type EvaluationReport = {
@@ -11,6 +20,7 @@ export type EvaluationReport = {
   redFlags: string[];
   averageScore: number;
   metrics: EvaluationMetric[];
+  calibration?: EvaluationCalibration;
 };
 
 export type SessionEndReason =
@@ -37,6 +47,24 @@ export type SessionRecord = {
   scenario: string;
   transcript: string;
   evaluation: EvaluationReport;
+  trainingConfig?: {
+    level: string;
+    challenge: {
+      ambiguity: number;
+      resistance: number;
+      emotionalVolatility: number;
+      goalConflict: number;
+    };
+  };
+  adaptiveProfile?: {
+    qualityBand: string;
+    qualityScore: number;
+    turns: number;
+    openQuestions: number;
+    leadingQuestions: number;
+    adviceMoments: number;
+    empathyMoments: number;
+  };
   audio?: {
     available: boolean;
     mimeType?: string;
@@ -60,12 +88,17 @@ export type SessionScorecardExport = {
   endedReason: SessionEndReason;
   scenario: string;
   evaluation: EvaluationReport;
+  trainingConfig?: SessionRecord["trainingConfig"];
+  adaptiveProfile?: SessionRecord["adaptiveProfile"];
 };
 
 const round2 = (value: number): number => Math.round(value * 100) / 100;
 
 const asString = (value: unknown): string =>
   typeof value === "string" ? value.trim() : "";
+
+const asStringArray = (value: unknown): string[] =>
+  Array.isArray(value) ? value.map(asString).filter(Boolean) : [];
 
 const asNumber = (value: unknown): number => {
   if (typeof value === "number" && Number.isFinite(value)) return value;
@@ -86,11 +119,21 @@ const parseMetric = (entry: unknown): EvaluationMetric | null => {
   const comments = asString(entry.comments);
   const score = asNumber(entry.score);
   if (!category || !metric || !comments) return null;
+  const confidenceRaw = asNumber(entry.confidence);
+  const confidence = Number.isFinite(confidenceRaw)
+    ? Math.max(0, Math.min(1, confidenceRaw))
+    : undefined;
+  const evidence = asStringArray(entry.evidence).slice(0, 3);
+  const calibrationNote = asString(entry.calibrationNote) || undefined;
+
   return {
     category,
     metric,
     comments,
     score: Math.max(0, Math.min(10, score)),
+    confidence,
+    evidence: evidence.length > 0 ? evidence : undefined,
+    calibrationNote,
   };
 };
 
@@ -169,6 +212,15 @@ export function normalizeEvaluationPayload(payload: unknown): EvaluationReport {
       ? payload.recommendations.map(asString).filter(Boolean)
       : [];
 
+  const calibration =
+    isRecord(payload) && isRecord(payload.calibration)
+      ? {
+          alignmentScore: Math.max(0, Math.min(100, asNumber(payload.calibration.alignmentScore))),
+          benchmark: asString(payload.calibration.benchmark) || "internal-expert-benchmarks-v1",
+          notes: asStringArray(payload.calibration.notes).slice(0, 4),
+        }
+      : undefined;
+
   const recommendations =
     recommendationsFromPayload.length > 0
       ? recommendationsFromPayload
@@ -185,6 +237,7 @@ export function normalizeEvaluationPayload(payload: unknown): EvaluationReport {
     redFlags,
     averageScore: averageMetricScore(cleanMetrics),
     metrics: cleanMetrics,
+    calibration,
   };
 }
 
@@ -219,7 +272,7 @@ export function buildProgressSummary(sessions: SessionRecord[]): ProgressSummary
 
 export function buildTranscriptExport(session: SessionRecord): string {
   return [
-    "Coaching Chameleon Session Transcript",
+    "KoMe Ai Session Transcript",
     "====================================",
     `Session ID: ${session.id}`,
     `Started At: ${session.startedAt}`,
@@ -248,6 +301,8 @@ export function buildScorecardExport(
     endedReason: session.endedReason,
     scenario: session.scenario,
     evaluation: session.evaluation,
+    trainingConfig: session.trainingConfig,
+    adaptiveProfile: session.adaptiveProfile,
   };
 }
 

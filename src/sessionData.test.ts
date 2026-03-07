@@ -26,6 +26,34 @@ test("normalizeEvaluationPayload supports structured object payloads", () => {
   assert.equal(result.averageScore, 7);
 });
 
+test("normalizeEvaluationPayload preserves confidence, evidence, and calibration", () => {
+  const result = normalizeEvaluationPayload({
+    summary: "Calibrated summary.",
+    recommendations: ["Use one clear contracting move."],
+    redFlags: [],
+    calibration: {
+      alignmentScore: 84,
+      benchmark: "internal-expert-benchmarks-v1",
+      notes: ["Clarity of Purpose: 6/10 confidence 72%"],
+    },
+    metrics: [
+      {
+        category: "Goal Alignment & Collaboration",
+        metric: "Clarity of Purpose",
+        score: 6,
+        comments: "Outcome was partially clear.",
+        confidence: 0.72,
+        evidence: ["T4: What would success look like today?"],
+        calibrationNote: "Near benchmark.",
+      },
+    ],
+  });
+
+  assert.equal(result.metrics[0].confidence, 0.72);
+  assert.equal(result.metrics[0].evidence?.length, 1);
+  assert.equal(result.calibration?.alignmentScore, 84);
+});
+
 test("normalizeEvaluationPayload supports legacy array payloads with red flags", () => {
   const result = normalizeEvaluationPayload([
     { category: "Presence", metric: "Curiosity", score: 9, comments: "Great." },

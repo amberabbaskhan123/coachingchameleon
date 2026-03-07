@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useRef, useEffect, useMemo } from 'react';
+import { useState, useRef, useEffect, useMemo, type FormEvent } from 'react';
 import {
   CalendarDays,
   Flag,
@@ -17,8 +17,13 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { GoogleGenAI, Modality, LiveServerMessage } from "@google/genai";
 import { customRubric } from './rubric';
-import { scenarios } from './scenarios';
-import { buildDashboardAnalytics } from './dashboardMetrics';
+import { scenarios, type Scenario } from './scenarios';
+import {
+  buildCompetencyMomentum,
+  buildCompetencyTrendInsights,
+  buildDashboardAnalytics,
+  buildLearningSnapshot,
+} from './dashboardMetrics';
 import { extractTranscriptLines } from './liveTranscript';
 import { getSessionAudio, storeSessionAudio } from './sessionAudioStore';
 import {
@@ -40,6 +45,22 @@ import {
   parseWildcardScenario,
 } from './wildcard';
 import { normalizeTheme, toggleTheme, type AppTheme } from './theme';
+import {
+  buildAdaptiveClientDirective,
+  createCoachSignalState,
+  updateCoachSignalState,
+} from './adaptiveClient';
+import {
+  DEFAULT_CHALLENGE_PROFILE,
+  buildLevelInstruction,
+  buildUnlockState,
+  isLevelUnlocked,
+  levelLabel,
+  orderedLevels,
+  type ChallengeProfile,
+  type CoachLevel,
+} from './coachProgression';
+import { applyCalibration, expertCalibrationBenchmarks } from './calibration';
 
 const GEMINI_API_KEY = (process.env.GEMINI_API_KEY ?? '').trim();
 const ai = hasUsableApiKey(GEMINI_API_KEY) ? new GoogleGenAI({ apiKey: GEMINI_API_KEY }) : null;
@@ -48,6 +69,7 @@ const STORAGE_KEYS = {
   sessions: "coaching_chameleon_sessions_v1",
   callLogs: "coaching_chameleon_call_logs_v1",
   theme: "coaching_chameleon_theme_v1",
+  auth: "kome_ai_auth_v1",
 };
 
 const VOICES = [
@@ -121,6 +143,12 @@ const scoreTextColor = (score: number): string => {
   return "text-rose-300";
 };
 
+const scoreChartColor = (score: number): string => {
+  if (score >= 7.5) return "#34d399";
+  if (score >= 5) return "#f59e0b";
+  return "#fb7185";
+};
+
 const skillLabel = (score: number): string => {
   if (score >= 8) return "Strong";
   if (score >= 6) return "Steady";
@@ -128,26 +156,50 @@ const skillLabel = (score: number): string => {
   return "Needs Attention";
 };
 
-const categoryFocusHint = (category: string): string => {
-  if (category.includes("Agreement")) {
-    return "Open by co-creating a concrete session outcome in the first 2 minutes.";
-  }
-  if (category.includes("Presence")) {
-    return "Reflect emotion before asking your next question.";
-  }
-  if (category.includes("Listens")) {
-    return "Paraphrase the client’s key phrase every 2-3 turns.";
-  }
-  if (category.includes("Awareness")) {
-    return "Use one non-leading, open question before offering perspective.";
-  }
-  return "Use client-led inquiry and avoid advice-giving.";
+const competencyShortLabel = (category: string): string => {
+  if (category.includes("Goal Alignment")) return "Goal Alignment";
+  if (category.includes("Attunement")) return "Attunement";
+  if (category.includes("Empathetic") || category.includes("Deep Listening")) return "Deep Listening";
+  if (category.includes("Facilitating")) return "Discovery";
+  if (category.includes("Bridging")) return "Insight to Action";
+  if (category.includes("Agreement")) return "Agreements";
+  if (category.includes("Presence")) return "Presence";
+  if (category.includes("Listens")) return "Listening";
+  if (category.includes("Awareness")) return "Awareness";
+  return category.split(" ")[0] ?? "Skill";
+};
+
+const formatScenarioLibraryEntry = (entry: Scenario): string =>
+  `${entry.title}
+
+Summary: ${entry.summary}
+
+Persona: ${entry.persona}
+
+Primary competencies: ${entry.competencies.join(", ")}`;
+
+const challengeTone = (value: number): string => {
+  if (value <= 2) return "Low";
+  if (value >= 4) return "High";
+  return "Medium";
+};
+
+const confidenceTextClass = (confidence: number | undefined): string => {
+  if (typeof confidence !== "number") return "text-zinc-500";
+  if (confidence >= 0.75) return "text-emerald-300";
+  if (confidence >= 0.55) return "text-amber-300";
+  return "text-rose-300";
 };
 
 type EncouragementHighlight = {
   id: string;
   rubricLabel: string;
   note: string;
+};
+
+type LoginSession = {
+  email: string;
+  signedInAt: string;
 };
 
 const encouragementLine = (
@@ -179,6 +231,44 @@ const encouragementLine = (
     rubricLabel: `${metric.category} · ${metric.metric} (${metric.score}/10)`,
     note: `${dynamicTone} ${spin} This shows up in ${categoryCoachingLanguage}.`,
   };
+};
+
+const areaToGrowExamples = (flag: string): string[] => {
+  const value = flag.toLowerCase();
+  if (value.includes("leading")) {
+    return [
+      "Ask one neutral open question and wait 3 seconds before your follow-up.",
+      "Reflect the client’s words first, then invite their meaning-making.",
+    ];
+  }
+  if (value.includes("advice") || value.includes("solution")) {
+    return [
+      "Replace advice with: “What feels like your next best step here?”",
+      "Check readiness before strategy: “Would it help to explore options now?”",
+    ];
+  }
+  if (value.includes("therapy")) {
+    return [
+      "Stay with coaching scope: focus on goals, choices, and accountability.",
+      "Use present-tense coaching questions over diagnostic interpretations.",
+    ];
+  }
+  if (value.includes("interrupt")) {
+    return [
+      "Let the client finish fully before your next intervention.",
+      "Use a brief summary to show listening before moving the session forward.",
+    ];
+  }
+  if (value.includes("stacked") || value.includes("multiple parts")) {
+    return [
+      "Ask one question at a time and pause for depth.",
+      "Prioritize one coaching objective per turn.",
+    ];
+  }
+  return [
+    "Use concise reflections to deepen client awareness before next questions.",
+    "Keep the conversation client-led with one clear inquiry at a time.",
+  ];
 };
 
 const CATEGORY_META: Record<string, { emoji: string; accent: string }> = {
@@ -239,9 +329,11 @@ const groupMetricsByCategory = (metrics: EvaluationMetric[]): CategoryGroup[] =>
 const CoachingHatMark = ({
   size,
   animated,
+  theme,
 }: {
   size: number;
   animated: boolean;
+  theme: AppTheme;
 }) => (
   <motion.svg
     width={size}
@@ -269,7 +361,7 @@ const CoachingHatMark = ({
       cx="80"
       cy="24"
       r="10"
-      fill="#f8fafc"
+      fill={theme === "dark" ? "#f8fafc" : "#0b1220"}
       animate={{ y: [0, -1.5, 0], x: [0, 1, 0] }}
       transition={{ duration: 2.2, repeat: Infinity, ease: "easeInOut" }}
     />
@@ -277,11 +369,19 @@ const CoachingHatMark = ({
 );
 
 // Unique Mascot Component
-const ChameleonMascot = ({ isConnected }: { isConnected: boolean }) => (
-  <CoachingHatMark size={170} animated={isConnected} />
+const ChameleonMascot = ({
+  isConnected,
+  theme,
+}: {
+  isConnected: boolean;
+  theme: AppTheme;
+}) => (
+  <CoachingHatMark size={170} animated={isConnected} theme={theme} />
 );
 
-const CoachingHatLogo = () => <CoachingHatMark size={38} animated />;
+const CoachingHatLogo = ({ theme }: { theme: AppTheme }) => (
+  <CoachingHatMark size={38} animated theme={theme} />
+);
 
 export default function App() {
   const [transcript, setTranscript] = useState<string>('');
@@ -289,6 +389,11 @@ export default function App() {
   const [isConnected, setIsConnected] = useState(false);
   const [isEvaluating, setIsEvaluating] = useState(false);
   const [duration, setDuration] = useState(10);
+  const [coachLevel, setCoachLevel] = useState<CoachLevel>("novice");
+  const [challengeProfile, setChallengeProfile] = useState<ChallengeProfile>(
+    DEFAULT_CHALLENGE_PROFILE,
+  );
+  const [selectedScenarioId, setSelectedScenarioId] = useState("");
   const [timeLeft, setTimeLeft] = useState(0);
   const [scenario, setScenario] = useState('');
   const [isScenarioConfirmed, setIsScenarioConfirmed] = useState(false);
@@ -296,6 +401,12 @@ export default function App() {
   const [theme, setTheme] = useState<AppTheme>(() =>
     normalizeTheme(readJsonStorage<string>(STORAGE_KEYS.theme, "dark")),
   );
+  const [loginSession, setLoginSession] = useState<LoginSession | null>(() =>
+    readJsonStorage<LoginSession | null>(STORAGE_KEYS.auth, null),
+  );
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [loginError, setLoginError] = useState("");
   const [activeView, setActiveView] = useState<"practice" | "dashboard">("practice");
   const [redFlagFocus, setRedFlagFocus] = useState(false);
   const [sessionHistory, setSessionHistory] = useState<SessionRecord[]>(() =>
@@ -318,10 +429,14 @@ export default function App() {
   const plannedDurationSecondsRef = useRef<number>(0);
   const messageCountRef = useRef(0);
   const remoteCloseExpectedRef = useRef(false);
+  const coachSignalRef = useRef(createCoachSignalState());
   const sessionHistorySectionRef = useRef<HTMLElement | null>(null);
 
   const setFallbackScenario = () => {
-    const localScenario = fallbackWildcardScenario(scenarios);
+    const levelScenarios = scenarios.filter((entry) => entry.level === coachLevel);
+    const localScenario = fallbackWildcardScenario(
+      levelScenarios.length > 0 ? levelScenarios : scenarios,
+    );
     setScenario(formatWildcardScenario(localScenario));
   };
 
@@ -353,6 +468,10 @@ export default function App() {
   }, [theme]);
 
   useEffect(() => {
+    writeJsonStorage(STORAGE_KEYS.auth, loginSession);
+  }, [loginSession]);
+
+  useEffect(() => {
     transcriptRef.current = transcript;
   }, [transcript]);
 
@@ -360,9 +479,24 @@ export default function App() {
     scenarioRef.current = scenario;
   }, [scenario]);
 
+  const unlockState = useMemo(
+    () => buildUnlockState(sessionHistory),
+    [sessionHistory],
+  );
+
+  useEffect(() => {
+    if (!isLevelUnlocked(unlockState, coachLevel)) {
+      setCoachLevel(unlockState.recommendedLevel);
+    }
+  }, [coachLevel, unlockState]);
+
+  useEffect(() => {
+    setSelectedScenarioId("");
+  }, [coachLevel]);
+
   const handleWildcard = async () => {
     setScenario("Generating wildcard scenario...");
-    addCallLog("wildcard.generate", "started");
+    addCallLog("wildcard.generate", "started", `level=${coachLevel}`);
     if (!ai) {
       setFallbackScenario();
       addCallLog("wildcard.generate", "fallback", "Gemini key unavailable; used local fallback scenario.");
@@ -372,10 +506,20 @@ export default function App() {
     try {
       const response = await ai.models.generateContent({
         model: CONTENT_MODEL,
-        contents: `Generate a diverse and challenging coaching scenario for a roleplay session. 
-        Use these existing scenarios as reference points for style and depth: 
-        ${JSON.stringify(scenarios)}. 
-        Return only the scenario title, summary, and persona in a JSON object with keys: title, summary, persona.`,
+        contents: `Generate one realistic coaching scenario for this virtual coaching lab.
+Training level: ${levelLabel(coachLevel)}.
+Challenge profile (1-5): ambiguity=${challengeProfile.ambiguity}, resistance=${challengeProfile.resistance}, emotionalVolatility=${challengeProfile.emotionalVolatility}, goalConflict=${challengeProfile.goalConflict}.
+
+Use this scenario library as style anchors:
+${JSON.stringify(scenarios)}.
+
+Requirements:
+- Include nuanced internal conflict and believable emotional texture.
+- Keep it in coaching scope (no therapy).
+- Make client behavior adapt naturally to coaching quality.
+- Prioritize advanced nuance when level is Advanced.
+
+Return only JSON with keys: title, summary, persona.`,
         config: { responseMimeType: "application/json" }
       });
       
@@ -506,8 +650,13 @@ export default function App() {
     try {
       remoteCloseExpectedRef.current = false;
       setEvaluationResults(null);
+      coachSignalRef.current = createCoachSignalState();
       addLog("Connecting...");
-      addCallLog("session.connect", "started", `duration=${duration}m voice=${voice}`);
+      addCallLog(
+        "session.connect",
+        "started",
+        `duration=${duration}m voice=${voice} level=${coachLevel} challenge=${JSON.stringify(challengeProfile)}`,
+      );
       transcriptRef.current = "";
       setTranscript(''); // Reset transcript
       setTimeLeft(duration * 60);
@@ -515,6 +664,7 @@ export default function App() {
       plannedDurationSecondsRef.current = duration * 60;
       messageCountRef.current = 0;
       audioChunksRef.current = [];
+      const levelInstruction = buildLevelInstruction(coachLevel, challengeProfile);
       const sessionPromise = ai.live.connect({
         model: "gemini-2.5-flash-native-audio-preview-09-2025",
         callbacks: {
@@ -603,10 +753,37 @@ export default function App() {
               });
 
               if (extracted.coach.length > 0) {
+                let snapshot = coachSignalRef.current;
+                for (const coachLine of extracted.coach) {
+                  snapshot = updateCoachSignalState(snapshot, coachLine);
+                }
+                coachSignalRef.current = snapshot;
+
+                if (sessionRef.current && snapshot.turns % 2 === 0) {
+                  try {
+                    sessionRef.current.sendClientContent({
+                      turns: [
+                        {
+                          role: "user",
+                          parts: [{ text: buildAdaptiveClientDirective(snapshot) }],
+                        },
+                      ],
+                      turnComplete: false,
+                    });
+                    addCallLog(
+                      "session.adaptive_signal",
+                      "info",
+                      `band=${snapshot.qualityBand} score=${snapshot.qualityScore}`,
+                    );
+                  } catch (signalError) {
+                    addCallLog("session.adaptive_signal", "error", String(signalError));
+                  }
+                }
+
                 addCallLog(
                   "session.input_transcription",
                   "info",
-                  `captured=${extracted.coach.length}`,
+                  `captured=${extracted.coach.length} band=${coachSignalRef.current.qualityBand}`,
                 );
               }
             }
@@ -624,7 +801,7 @@ export default function App() {
           responseModalities: [Modality.AUDIO],
           outputAudioTranscription: {},
           inputAudioTranscription: {},
-          systemInstruction: `You are Coaching Chameleon (CC) — a roleplay simulation agent designed to help coaches practice real coaching conversations.
+          systemInstruction: `You are KoMe Ai (KA) — a roleplay simulation agent designed to help coaches practice real coaching conversations.
 
 Your defining ability is adaptive identity: you can transform into any type of client the coach wants to practice with.
 
@@ -777,7 +954,7 @@ Then wait for the coach to respond.
 
 Identity
 
-You are Coaching Chameleon (CC) — a simulation client that can take the shape of any coaching scenario provided by the coach.
+You are KoMe Ai (KA) — a simulation client that can take the shape of any coaching scenario provided by the coach.
 
 When the coach describes a situation, become that person and begin the session.
 
@@ -816,13 +993,38 @@ You must follow these 4 phases sequentially based on the conversation's progress
    Behavioral rules: Suggest one small behavioral experiment related to the presenting problem. Keep it realistic and limited. Acknowledge discomfort. Avoid dramatic transformation language. Do not claim resolution.
    If coach asks future-focused, open questions: Allow motivation to increase slightly, maintain grounded tone.
    If coach pushes for dramatic planning: Drift back toward your usual framing, reduce depth.
-   Guardrails: Do not say the issue is solved, overcommit, summarize the session, give advice to yourself, or switch into teacher mode. End in a thoughtful, steady tone.`,
+   Guardrails: Do not say the issue is solved, overcommit, summarize the session, give advice to yourself, or switch into teacher mode. End in a thoughtful, steady tone.
+
+TRAINING LEVEL CONFIG:
+${levelInstruction}
+
+ADAPTIVE SIGNAL PROTOCOL:
+You may receive hidden bracketed notes beginning with [ADAPTIVE_COACH_SIGNAL].
+These notes are backend quality telemetry, not dialogue.
+Never quote, mention, or acknowledge these notes to the coach.
+Use them only to modulate your openness/guardedness in roleplay.`,
           speechConfig: {
             voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } },
           },
         },
       });
       sessionRef.current = await sessionPromise;
+      sessionRef.current.sendClientContent({
+        turns: [
+          {
+            role: "user",
+            parts: [
+              {
+                text: `[ADAPTIVE_COACH_SIGNAL]
+Initial mode setup for this session:
+${buildAdaptiveClientDirective(coachSignalRef.current)}
+`,
+              },
+            ],
+          },
+        ],
+        turnComplete: false,
+      });
     } catch (error) {
       console.error("Failed to connect:", error);
       addCallLog("session.connect", "error", String(error));
@@ -886,7 +1088,9 @@ You must follow these 4 phases sequentially based on the conversation's progress
         model: CONTENT_MODEL,
         contents: `Evaluate this coaching transcript: ${finalTranscript}.
 Score the coach against this rubric: ${JSON.stringify(customRubric)}.
+Calibrate your scoring against these expert benchmark anchors: ${JSON.stringify(expertCalibrationBenchmarks)}.
 Do NOT use ICF language in labels.
+Use explicit evidence references (short transcript snippets) for each metric and estimate scoring confidence.
 
 Return only JSON with this exact shape:
 {
@@ -894,17 +1098,31 @@ Return only JSON with this exact shape:
   "recommendations": ["string", "string"],
   "redFlags": ["Explicitly include any leading/advice/therapy-style issues"],
   "metrics": [
-    {"category":"string","metric":"string","score":0-10,"comments":"string"}
-  ]
+    {
+      "category":"string",
+      "metric":"string",
+      "score":0-10,
+      "comments":"string",
+      "confidence":0-1,
+      "evidence":["T#: short quote", "T#: short quote"],
+      "calibrationNote":"string"
+    }
+  ],
+  "calibration":{
+    "alignmentScore":0-100,
+    "benchmark":"internal-expert-benchmarks-v1",
+    "notes":["string"]
+  }
 }`,
         config: { responseMimeType: "application/json" }
       });
 
       const parsed = JSON.parse(response.text ?? "{}");
       const normalized = normalizeEvaluationPayload(parsed);
+      const calibrated = applyCalibration(normalized, finalTranscript);
       addCallLog("evaluation.generate", "success");
       addLog("Evaluation complete");
-      return normalized;
+      return calibrated;
     } catch (evaluationError) {
       console.error("Evaluation error:", evaluationError);
       addLog(`Evaluation error: ${String(evaluationError)}`);
@@ -974,6 +1192,19 @@ Return only JSON with this exact shape:
         scenario: scenarioRef.current,
         transcript: finalTranscript,
         evaluation,
+        trainingConfig: {
+          level: coachLevel,
+          challenge: challengeProfile,
+        },
+        adaptiveProfile: {
+          qualityBand: coachSignalRef.current.qualityBand,
+          qualityScore: coachSignalRef.current.qualityScore,
+          turns: coachSignalRef.current.turns,
+          openQuestions: coachSignalRef.current.openQuestions,
+          leadingQuestions: coachSignalRef.current.leadingQuestions,
+          adviceMoments: coachSignalRef.current.adviceMoments,
+          empathyMoments: coachSignalRef.current.empathyMoments,
+        },
         audio: {
           available: Boolean(sessionAudioBlob),
           mimeType: sessionAudioBlob?.type || recordingMimeTypeRef.current,
@@ -1019,8 +1250,6 @@ Return only JSON with this exact shape:
     return { ...point, x, y };
   });
   const scorePolyline = scoreChartPoints.map((point) => `${point.x},${point.y}`).join(" ");
-  const topRedFlags = dashboardAnalytics.redFlagFrequency.slice(0, 5);
-  const maxRedFlagCount = Math.max(1, ...topRedFlags.map((item) => item.count));
   const totalPracticeMinutes = Math.round(
     sessionHistory.reduce((sum, session) => sum + session.elapsedSeconds, 0) / 60,
   );
@@ -1029,6 +1258,7 @@ Return only JSON with this exact shape:
     ? [...sessionHistory].sort((a, b) => b.endedAt.localeCompare(a.endedAt))[0]
     : null;
   const latestFeedback = evaluationResults ?? latestSession?.evaluation ?? null;
+  const latestAreasToGrow = latestSession?.evaluation.redFlags ?? [];
   const latestFeedbackGroups = latestFeedback
     ? groupMetricsByCategory(latestFeedback.metrics)
     : [];
@@ -1058,10 +1288,28 @@ Return only JSON with this exact shape:
       }))
       .sort((a, b) => b.score - a.score);
   })();
+  const competencyMomentumData = buildCompetencyMomentum(sessionHistory);
+  const competencyOrder = Object.keys(CATEGORY_META);
   const strongestSkill = skillBreakdown[0] ?? null;
   const focusSkill = skillBreakdown.length > 0
     ? [...skillBreakdown].sort((a, b) => a.score - b.score)[0]
     : null;
+  const competencyChartData = [...competencyMomentumData]
+    .sort((a, b) => {
+      const aOrder = competencyOrder.indexOf(a.category);
+      const bOrder = competencyOrder.indexOf(b.category);
+      if (aOrder === -1 && bOrder === -1) return a.category.localeCompare(b.category);
+      if (aOrder === -1) return 1;
+      if (bOrder === -1) return -1;
+      return aOrder - bOrder;
+    })
+    .slice(0, 6);
+  const competencyTrends = buildCompetencyTrendInsights(sessionHistory);
+  const learningSnapshot = buildLearningSnapshot(sessionHistory);
+  const latestAdaptiveProfile = latestSession?.adaptiveProfile ?? null;
+  const scenarioLibrary = [...scenarios];
+  const levelScenarios = scenarios.filter((entry) => entry.level === coachLevel);
+  const levelScenarioCount = levelScenarios.length;
   const weeklyTargetMinutes = 45;
   const practiceGoalProgress = Math.max(
     0,
@@ -1103,14 +1351,93 @@ Return only JSON with this exact shape:
     URL.revokeObjectURL(url);
   };
 
+  const handleLoginSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const email = loginEmail.trim().toLowerCase();
+    if (!email || !loginPassword.trim()) {
+      setLoginError("Enter email and password.");
+      return;
+    }
+
+    setLoginSession({
+      email,
+      signedInAt: new Date().toISOString(),
+    });
+    setLoginError("");
+    setLoginPassword("");
+  };
+
+  const handleLogout = () => {
+    setLoginSession(null);
+    setLoginEmail("");
+    setLoginPassword("");
+    setActiveView("practice");
+  };
+
+  const shellClassName = `min-h-screen relative overflow-hidden text-zinc-100 p-4 md:p-6 flex flex-col items-center font-sans ${
+    theme === "dark"
+      ? "bg-zinc-950 bg-[radial-gradient(circle_at_top,_rgba(34,211,238,0.18),transparent_38%),radial-gradient(circle_at_80%_20%,_rgba(168,85,247,0.16),transparent_34%)]"
+      : "bg-slate-50 bg-[radial-gradient(circle_at_top,_rgba(14,165,233,0.10),transparent_40%),radial-gradient(circle_at_84%_18%,_rgba(16,185,129,0.10),transparent_36%)]"
+  }`;
+
+  if (!loginSession) {
+    return (
+      <div data-theme={theme} className={shellClassName}>
+        <motion.svg
+          className="pointer-events-none absolute -right-36 top-8 h-[360px] w-[460px] opacity-[0.08] md:opacity-[0.12]"
+          viewBox="0 0 120 90"
+          animate={{ y: [0, -6, 0], x: [0, 3, 0] }}
+          transition={{ duration: 9, repeat: Infinity, ease: "easeInOut" }}
+          aria-hidden="true"
+        >
+          <path
+            d="M13 62 C28 29, 66 14, 89 26 C104 34, 112 55, 102 69 C92 82, 67 80, 43 74 C30 71, 20 67, 13 62 Z"
+            fill="#10b981"
+          />
+          <circle cx="80" cy="24" r="10" fill="#10b981" />
+        </motion.svg>
+        <main className="relative z-10 w-full max-w-md flex-1 flex items-center">
+          <section className="w-full rounded-3xl border border-zinc-800 bg-zinc-900/95 p-6">
+            <div className="flex items-center gap-3">
+              <CoachingHatLogo theme={theme} />
+              <div>
+                <h1 className="text-2xl font-semibold">KoMe Ai</h1>
+                <p className="text-sm text-zinc-400">Coach Practice Login</p>
+              </div>
+            </div>
+            <form className="mt-6 space-y-3" onSubmit={handleLoginSubmit}>
+              <input
+                type="email"
+                value={loginEmail}
+                onChange={(event) => setLoginEmail(event.target.value)}
+                placeholder="Email"
+                className="w-full rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-3 text-zinc-100"
+              />
+              <input
+                type="password"
+                value={loginPassword}
+                onChange={(event) => setLoginPassword(event.target.value)}
+                placeholder="Password"
+                className="w-full rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-3 text-zinc-100"
+              />
+              {loginError && <p className="text-sm text-red-300">{loginError}</p>}
+              <button
+                type="submit"
+                className="w-full rounded-xl bg-emerald-600 text-white py-3 font-medium"
+              >
+                Sign In
+              </button>
+            </form>
+          </section>
+        </main>
+      </div>
+    );
+  }
+
   return (
     <div
       data-theme={theme}
-      className={`min-h-screen relative overflow-hidden text-zinc-100 p-4 md:p-6 flex flex-col items-center font-sans ${
-        theme === "dark"
-          ? "bg-zinc-950 bg-[radial-gradient(circle_at_top,_rgba(34,211,238,0.18),transparent_38%),radial-gradient(circle_at_80%_20%,_rgba(168,85,247,0.16),transparent_34%)]"
-          : "bg-slate-50 bg-[radial-gradient(circle_at_top,_rgba(14,165,233,0.10),transparent_40%),radial-gradient(circle_at_84%_18%,_rgba(16,185,129,0.10),transparent_36%)]"
-      }`}
+      className={shellClassName}
     >
       <motion.svg
         className="pointer-events-none absolute -right-36 top-8 h-[360px] w-[460px] opacity-[0.08] md:opacity-[0.12]"
@@ -1123,7 +1450,7 @@ Return only JSON with this exact shape:
           d="M13 62 C28 29, 66 14, 89 26 C104 34, 112 55, 102 69 C92 82, 67 80, 43 74 C30 71, 20 67, 13 62 Z"
           fill="#10b981"
         />
-        <circle cx="80" cy="24" r="10" fill="#10b981" />
+        <circle cx="80" cy="24" r="10" fill={theme === "dark" ? "#f8fafc" : "#0b1220"} />
       </motion.svg>
 
       <header className="relative z-10 w-full max-w-6xl flex flex-wrap gap-4 justify-between items-center mb-6 border-b border-zinc-800 pb-5">
@@ -1132,9 +1459,12 @@ Return only JSON with this exact shape:
           animate={{ opacity: 1, x: 0 }}
           className="text-3xl font-light tracking-tighter flex items-center gap-3"
         >
-          <CoachingHatLogo /> Coaching Chameleon
+          <CoachingHatLogo theme={theme} /> KoMe Ai
         </motion.h1>
         <div className="flex flex-wrap gap-2">
+          <p className="px-3 py-2 rounded-xl bg-zinc-900 border border-zinc-700 text-zinc-300 text-sm">
+            {loginSession.email}
+          </p>
           <button
             onClick={() => setTheme((prev) => toggleTheme(prev))}
             className="px-4 py-2 rounded-xl bg-zinc-900 border border-zinc-700 text-zinc-200"
@@ -1167,6 +1497,12 @@ Return only JSON with this exact shape:
           >
             Download Logs
           </button>
+          <button
+            onClick={handleLogout}
+            className="px-4 py-2 rounded-xl bg-zinc-900 border border-zinc-700 text-zinc-200"
+          >
+            Logout
+          </button>
         </div>
       </header>
 
@@ -1174,7 +1510,7 @@ Return only JSON with this exact shape:
         <main className="relative z-10 flex-1 w-full max-w-6xl grid grid-cols-1 lg:grid-cols-[minmax(0,420px)_minmax(0,1fr)] gap-6">
           <section className="bg-zinc-900/95 border border-zinc-800 rounded-3xl p-6 space-y-4">
             <div className="flex items-center justify-center">
-              <ChameleonMascot isConnected={isConnected} />
+              <ChameleonMascot isConnected={isConnected} theme={theme} />
             </div>
             <textarea
               value={scenario}
@@ -1198,6 +1534,94 @@ Return only JSON with this exact shape:
             >
               <Wand2 size={16} /> Wildcard Scenario
             </button>
+            <div className="rounded-xl border border-zinc-800 bg-zinc-950 p-3 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs uppercase tracking-wide text-zinc-500">Scenario Library</p>
+                <p className="text-[11px] text-zinc-500">
+                  {scenarioLibrary.length} total • {levelScenarioCount} {levelLabel(coachLevel)}
+                </p>
+              </div>
+              <select
+                className="w-full p-2.5 rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-100"
+                value={selectedScenarioId}
+                disabled={isScenarioConfirmed}
+                onChange={(event) => {
+                  const nextId = event.target.value;
+                  setSelectedScenarioId(nextId);
+                  if (!nextId) return;
+                  const entry = scenarioLibrary.find((item) => item.id === nextId);
+                  if (entry) {
+                    setScenario(formatScenarioLibraryEntry(entry));
+                    addCallLog("scenario.library.load", "success", `id=${entry.id} level=${entry.level}`);
+                  }
+                }}
+              >
+                <option value="">Select a scenario template</option>
+                {scenarioLibrary.map((entry) => (
+                  <option key={entry.id} value={entry.id}>
+                    [{levelLabel(entry.level)}] {entry.title}
+                  </option>
+                ))}
+              </select>
+              <p className="text-[11px] text-zinc-500">
+                Loads title, summary, persona, and target competencies into the scenario box.
+              </p>
+            </div>
+            <div className="rounded-xl border border-zinc-800 bg-zinc-950 p-3 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs uppercase tracking-wide text-zinc-500">Training Level</p>
+                <p className="text-[11px] text-zinc-500">{unlockState.rationale}</p>
+              </div>
+              <select
+                className="w-full p-2.5 rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-100"
+                value={coachLevel}
+                disabled={isScenarioConfirmed}
+                onChange={(event) => setCoachLevel(event.target.value as CoachLevel)}
+              >
+                {orderedLevels().map((level) => {
+                  const unlocked = isLevelUnlocked(unlockState, level);
+                  return (
+                    <option key={level} value={level} disabled={!unlocked}>
+                      {levelLabel(level)}{unlocked ? "" : " (Locked)"}
+                    </option>
+                  );
+                })}
+              </select>
+              <p className="text-[11px] text-zinc-500">
+                {levelScenarioCount} curated {coachLevel} scenario{levelScenarioCount === 1 ? "" : "s"} available.
+              </p>
+              <div className="grid grid-cols-2 gap-2">
+                {(
+                  [
+                    ["ambiguity", "Ambiguity"],
+                    ["resistance", "Resistance"],
+                    ["emotionalVolatility", "Emotion"],
+                    ["goalConflict", "Goal Conflict"],
+                  ] as const
+                ).map(([key, label]) => (
+                  <label key={key} className="text-[11px] text-zinc-400">
+                    <div className="flex justify-between mb-1">
+                      <span>{label}</span>
+                      <span>{challengeTone(challengeProfile[key])}</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={1}
+                      max={5}
+                      value={challengeProfile[key]}
+                      disabled={isScenarioConfirmed}
+                      onChange={(event) =>
+                        setChallengeProfile((prev) => ({
+                          ...prev,
+                          [key]: Number(event.target.value),
+                        }))
+                      }
+                      className="w-full accent-emerald-500"
+                    />
+                  </label>
+                ))}
+              </div>
+            </div>
             <select
               className="w-full p-3 rounded-xl bg-zinc-900 border border-zinc-800 text-zinc-100"
               onChange={(e) => setVoice(e.target.value)}
@@ -1226,7 +1650,7 @@ Return only JSON with this exact shape:
               disabled={(!isConnected && !isScenarioConfirmed) || isEvaluating}
               className={`w-full flex items-center justify-center gap-3 px-8 py-4 rounded-full font-semibold text-lg transition-all ${
                 isConnected
-                  ? "bg-red-950 text-red-200 border border-red-800"
+                  ? "bg-red-950 text-white force-white border border-red-800"
                   : "bg-emerald-600 text-white shadow-lg shadow-emerald-900/20"
               } disabled:opacity-50`}
             >
@@ -1306,12 +1730,55 @@ Return only JSON with this exact shape:
                                 />
                               </div>
                               <p className="text-sm text-zinc-400 mt-2">{metric.comments}</p>
+                              <p className={`text-xs mt-1 ${confidenceTextClass(metric.confidence)}`}>
+                                Confidence: {typeof metric.confidence === "number"
+                                  ? `${Math.round(metric.confidence * 100)}%`
+                                  : "Not available"}
+                              </p>
+                              {metric.evidence && metric.evidence.length > 0 && (
+                                <ul className="mt-1 text-[11px] text-zinc-500 space-y-0.5">
+                                  {metric.evidence.slice(0, 2).map((item) => (
+                                    <li key={item}>Evidence: {item}</li>
+                                  ))}
+                                </ul>
+                              )}
+                              {metric.calibrationNote && (
+                                <p className="text-[11px] text-zinc-500 mt-1">
+                                  {metric.calibrationNote}
+                                </p>
+                              )}
                             </div>
                           </div>
                         ))}
                       </div>
                     </section>
                   ))}
+
+                  <section className="rounded-2xl border border-cyan-900/60 bg-cyan-950/20 p-4">
+                    <h3 className="font-semibold text-cyan-300">Calibration Check</h3>
+                    {evaluationResults.calibration ? (
+                      <div className="mt-2 text-sm text-zinc-300 space-y-1">
+                        <p>
+                          Alignment Score:{" "}
+                          <span className="text-cyan-300 font-medium">
+                            {evaluationResults.calibration.alignmentScore}%
+                          </span>
+                        </p>
+                        <p className="text-zinc-400 text-xs">
+                          Benchmark: {evaluationResults.calibration.benchmark}
+                        </p>
+                        <ul className="text-xs text-zinc-400 list-disc pl-5 space-y-1">
+                          {evaluationResults.calibration.notes.map((note) => (
+                            <li key={note}>{note}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : (
+                      <p className="mt-2 text-sm text-zinc-400">
+                        Calibration data unavailable for this run.
+                      </p>
+                    )}
+                  </section>
 
                   <section className="rounded-2xl border border-red-900/60 bg-red-950/20 p-4">
                     <h3 className="font-semibold text-red-300 flex items-center gap-2">
@@ -1524,22 +1991,64 @@ Return only JSON with this exact shape:
                   ) : (
                     <p className="text-zinc-400 text-sm">Start sessions to generate trend charts.</p>
                   )}
-                  <div className="mt-4 rounded-xl border border-emerald-500/25 bg-emerald-500/10 p-3">
-                    <h4 className="text-sm font-semibold text-emerald-300">Coach Wins</h4>
-                    {encouragementHighlights.length > 0 ? (
-                      <ul className="mt-2 space-y-2 text-sm text-zinc-200">
-                        {encouragementHighlights.map((highlight) => (
-                          <li key={highlight.id}>
-                            <span className="font-medium">{highlight.rubricLabel}</span>
-                            {" — "}
-                            {highlight.note}
-                          </li>
-                        ))}
-                      </ul>
+                  <div className="mt-4 rounded-xl border border-zinc-800 bg-zinc-900 p-3">
+                    <div className="flex items-center justify-between gap-2 mb-2">
+                      <p className="text-xs uppercase tracking-wide text-zinc-500">Competency Momentum</p>
+                      <p className="text-[10px] text-zinc-500">Recent 3 vs all-time</p>
+                    </div>
+                    {competencyChartData.length > 0 ? (
+                      <div className="space-y-2">
+                        {competencyChartData.map((item) => {
+                          const allTimePercent = scoreToPercent(item.allTime);
+                          const recentPercent = scoreToPercent(item.recent);
+                          const deltaClass = item.delta > 0
+                            ? "text-emerald-300"
+                            : item.delta < 0
+                              ? "text-rose-300"
+                              : "text-zinc-400";
+                          const shortLabel = competencyShortLabel(item.category);
+                          return (
+                            <div key={item.category} className="rounded-lg border border-zinc-800 bg-zinc-950 p-2">
+                              <div className="flex items-center justify-between gap-2 text-xs">
+                                <p className="text-zinc-200 font-medium">{shortLabel}</p>
+                                <p className={deltaClass}>
+                                  {item.delta > 0 ? "+" : ""}
+                                  {item.delta.toFixed(1)}
+                                </p>
+                              </div>
+                              <div className="mt-1.5 space-y-1">
+                                <div className="grid grid-cols-[40px_minmax(0,1fr)_28px] items-center gap-2">
+                                  <p className="text-[10px] uppercase tracking-wide text-zinc-500">All</p>
+                                  <div className="h-1.5 rounded bg-zinc-800 overflow-hidden">
+                                    <div
+                                      className="h-full bg-zinc-500"
+                                      style={{ width: `${allTimePercent}%` }}
+                                      title={`${item.category} all-time: ${item.allTime.toFixed(1)}/10`}
+                                    />
+                                  </div>
+                                  <p className="text-[10px] text-zinc-500 text-right">{item.allTime.toFixed(1)}</p>
+                                </div>
+                                <div className="grid grid-cols-[40px_minmax(0,1fr)_28px] items-center gap-2">
+                                  <p className="text-[10px] uppercase tracking-wide text-zinc-500">Now</p>
+                                  <div className="h-1.5 rounded bg-zinc-800 overflow-hidden">
+                                    <div
+                                      className="h-full"
+                                      style={{
+                                        width: `${recentPercent}%`,
+                                        background: scoreChartColor(item.recent),
+                                      }}
+                                      title={`${item.category} recent: ${item.recent.toFixed(1)}/10`}
+                                    />
+                                  </div>
+                                  <p className="text-[10px] text-zinc-300 text-right">{item.recent.toFixed(1)}</p>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
                     ) : (
-                      <p className="mt-2 text-sm text-zinc-300">
-                        You’re showing up for your craft. Keep going.
-                      </p>
+                      <p className="text-zinc-500 text-xs">Complete sessions to unlock competency momentum.</p>
                     )}
                   </div>
                 </article>
@@ -1570,25 +2079,136 @@ Return only JSON with this exact shape:
                         </div>
                       </div>
 
-                      {skillBreakdown.map((item) => (
-                        <div key={item.category} className="rounded-xl border border-zinc-800 bg-zinc-900 p-3">
-                          <div className="flex justify-between text-sm gap-2">
-                            <span className="text-zinc-100 font-medium">{item.category}</span>
-                            <span className="text-zinc-300">{item.score}/10 · {skillLabel(item.score)}</span>
-                          </div>
-                          <div className="h-2 rounded bg-zinc-800 mt-2 overflow-hidden">
-                            <div
-                              className={`h-full bg-gradient-to-r ${scoreTrackColor(item.score)}`}
-                              style={{ width: `${scoreToPercent(item.score)}%` }}
-                            />
-                          </div>
-                          <p className="text-xs text-zinc-400 mt-2">{categoryFocusHint(item.category)}</p>
-                        </div>
-                      ))}
+                      <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/10 p-3">
+                        <h4 className="text-sm font-semibold text-emerald-300">Coach Wins</h4>
+                        {encouragementHighlights.length > 0 ? (
+                          <ul className="mt-2 space-y-2 text-sm text-zinc-200">
+                            {encouragementHighlights.map((highlight) => (
+                              <li key={highlight.id}>
+                                <span className="font-medium">{highlight.rubricLabel}</span>
+                                {" — "}
+                                {highlight.note}
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p className="mt-2 text-sm text-zinc-300">
+                            You’re showing up for your craft. Keep going.
+                          </p>
+                        )}
+                      </div>
                     </div>
                   ) : (
                     <p className="text-zinc-400 text-sm">Complete sessions to unlock competency mapping.</p>
                   )}
+                </article>
+              </section>
+
+              <section className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                <article className="rounded-2xl border border-zinc-800 bg-zinc-950 p-4">
+                  <h3 className="text-xl font-semibold mb-1">Competency Trajectory</h3>
+                  <p className="text-xs text-zinc-500 mb-3">Recent vs prior baseline with readable trend signals</p>
+                  {competencyTrends.length > 0 ? (
+                    <div className="space-y-2">
+                      {competencyTrends.map((trend) => {
+                        const delta = trend.recent - trend.baseline;
+                        const consistencyLabel = trend.consistency >= 8
+                          ? "High"
+                          : trend.consistency >= 6
+                            ? "Moderate"
+                            : "Low";
+                        const trendClass = trend.trend === "Rising"
+                          ? "text-emerald-300"
+                          : trend.trend === "Falling"
+                            ? "text-rose-300"
+                            : "text-zinc-400";
+                        return (
+                          <div key={trend.category} className="rounded-lg border border-zinc-800 bg-zinc-900 p-3">
+                            <div className="flex items-center justify-between gap-2">
+                              <p className="text-sm text-zinc-200">{competencyShortLabel(trend.category)}</p>
+                              <p className={`text-xs ${
+                                delta >= 0.3 ? "text-emerald-300" : delta <= -0.3 ? "text-rose-300" : "text-zinc-400"
+                              }`}>
+                                {delta > 0 ? "+" : ""}{delta.toFixed(1)}
+                              </p>
+                            </div>
+                            <div className="mt-1 text-[11px] text-zinc-500 flex flex-wrap gap-x-3 gap-y-1">
+                              <span>Baseline {trend.baseline.toFixed(1)}</span>
+                              <span>Recent {trend.recent.toFixed(1)}</span>
+                              <span className={trendClass}>Trend {trend.trend}</span>
+                              <span>Consistency {consistencyLabel}</span>
+                              <span>n={trend.sampleCount}</span>
+                            </div>
+                            {trend.regressionRisk && (
+                              <p className="text-[11px] text-rose-300 mt-1">
+                                Regression alert: recent performance dipped below baseline.
+                              </p>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="text-sm text-zinc-400">Complete sessions to unlock trajectory analysis.</p>
+                  )}
+                </article>
+
+                <article className="rounded-2xl border border-zinc-800 bg-zinc-950 p-4 space-y-4">
+                  <div>
+                    <h3 className="text-xl font-semibold">Learning Loop</h3>
+                    <p className="text-xs text-zinc-500">What improved in last 5 sessions and what to practice next</p>
+                  </div>
+
+                  <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 p-3">
+                    <p className="text-xs uppercase tracking-wide text-emerald-300">Improved (Last 5)</p>
+                    {learningSnapshot.wins.length > 0 ? (
+                      <ul className="mt-2 space-y-1 text-sm text-zinc-200">
+                        {learningSnapshot.wins.map((win) => (
+                          <li key={win.category}>
+                            {competencyShortLabel(win.category)}{" "}
+                            <span className="text-emerald-300">+{win.delta.toFixed(1)}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="mt-2 text-sm text-zinc-300">No significant gains detected yet.</p>
+                    )}
+                  </div>
+
+                  <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 p-3">
+                    <p className="text-xs uppercase tracking-wide text-amber-300">Next Practice Targets</p>
+                    {learningSnapshot.targets.length > 0 ? (
+                      <ul className="mt-2 space-y-2 text-sm text-zinc-200">
+                        {learningSnapshot.targets.map((target) => (
+                          <li key={target.category}>
+                            <p className="font-medium">{competencyShortLabel(target.category)}</p>
+                            <p className="text-xs text-zinc-400">{target.reason}</p>
+                            <p className="text-xs text-zinc-300">Focus move: {target.action}</p>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="mt-2 text-sm text-zinc-300">No immediate regression targets.</p>
+                    )}
+                  </div>
+
+                  <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/10 p-3">
+                    <p className="text-xs uppercase tracking-wide text-cyan-300">AI Client Adaptation (Latest)</p>
+                    {latestAdaptiveProfile ? (
+                      <div className="mt-2 text-sm text-zinc-200 space-y-1">
+                        <p>
+                          Mode: <span className="capitalize text-cyan-300">{latestAdaptiveProfile.qualityBand}</span>{" "}
+                          ({latestAdaptiveProfile.qualityScore}/100)
+                        </p>
+                        <p className="text-xs text-zinc-400">
+                          Open Qs: {latestAdaptiveProfile.openQuestions} · Leading: {latestAdaptiveProfile.leadingQuestions}
+                          {" "}· Advice: {latestAdaptiveProfile.adviceMoments} · Empathy: {latestAdaptiveProfile.empathyMoments}
+                        </p>
+                      </div>
+                    ) : (
+                      <p className="mt-2 text-sm text-zinc-300">No adaptation profile available yet.</p>
+                    )}
+                  </div>
                 </article>
               </section>
 
@@ -1635,12 +2255,35 @@ Return only JSON with this exact shape:
                                   />
                                 </div>
                                 <p className="text-xs text-zinc-400 mt-1">{metric.comments}</p>
+                                <p className={`text-[11px] mt-1 ${confidenceTextClass(metric.confidence)}`}>
+                                  Confidence: {typeof metric.confidence === "number"
+                                    ? `${Math.round(metric.confidence * 100)}%`
+                                    : "n/a"}
+                                </p>
+                                {metric.evidence && metric.evidence.length > 0 && (
+                                  <p className="text-[11px] text-zinc-500 mt-1">
+                                    {metric.evidence[0]}
+                                  </p>
+                                )}
                               </div>
                             </div>
                           ))}
                         </div>
                       </article>
                     ))}
+                    {latestFeedback.calibration && (
+                      <article className="rounded-xl border border-zinc-800 bg-zinc-900 p-3">
+                        <p className="text-xs uppercase tracking-wide text-zinc-500">Calibration</p>
+                        <p className="text-sm text-zinc-200 mt-1">
+                          Alignment {latestFeedback.calibration.alignmentScore}% · {latestFeedback.calibration.benchmark}
+                        </p>
+                        <ul className="mt-2 text-xs text-zinc-400 list-disc pl-5 space-y-1">
+                          {latestFeedback.calibration.notes.map((note) => (
+                            <li key={note}>{note}</li>
+                          ))}
+                        </ul>
+                      </article>
+                    )}
                   </div>
                 ) : (
                   <p className="p-4 text-zinc-400 text-sm">
@@ -1651,29 +2294,27 @@ Return only JSON with this exact shape:
 
               <section className="grid grid-cols-1 xl:grid-cols-2 gap-4">
                 <article className="rounded-2xl border border-zinc-800 bg-zinc-950 p-4">
-                  <h3 className="text-xl font-semibold text-red-300 mb-3">Top Red Flags</h3>
-                  {topRedFlags.length > 0 ? (
-                    <div className="space-y-2">
-                      {topRedFlags.map((item) => (
-                        <div key={item.flag} className="bg-zinc-900 border border-zinc-800 rounded-lg p-3">
-                          <div className="flex justify-between text-sm gap-3">
-                            <span className="text-zinc-200">{item.flag}</span>
-                            <span className="text-red-300">{item.count}</span>
-                          </div>
-                          <div className="mt-2 h-2 rounded bg-zinc-800 overflow-hidden">
-                            <div
-                              className="h-full bg-gradient-to-r from-red-500 to-orange-400"
-                              style={{ width: `${(item.count / maxRedFlagCount) * 100}%` }}
-                            />
-                          </div>
-                          <p className="text-xs text-zinc-500 mt-1">
-                            Last seen {new Date(item.lastSeen).toLocaleDateString()}
-                          </p>
+                  <h3 className="text-xl font-semibold text-red-300 mb-1">Areas to Grow</h3>
+                  <p className="text-xs text-zinc-500 mb-3">
+                    Session log {latestSession ? `• ${new Date(latestSession.endedAt).toLocaleString()}` : ""}
+                  </p>
+                  {latestAreasToGrow.length > 0 ? (
+                    <div className="space-y-3">
+                      {latestAreasToGrow.map((flag, index) => (
+                        <div key={`${flag}-${index}`} className="bg-zinc-900 border border-zinc-800 rounded-lg p-3">
+                          <p className="text-sm text-zinc-200">{flag}</p>
+                          <ul className="mt-2 space-y-1 text-xs text-zinc-400">
+                            {areaToGrowExamples(flag).slice(0, 2).map((example) => (
+                              <li key={example}>Example: {example}</li>
+                            ))}
+                          </ul>
                         </div>
                       ))}
                     </div>
                   ) : (
-                    <p className="text-zinc-400 text-sm">No recurring red flags yet.</p>
+                    <p className="text-zinc-400 text-sm">
+                      No current areas logged for the latest session.
+                    </p>
                   )}
                 </article>
 
@@ -1704,7 +2345,7 @@ Return only JSON with this exact shape:
                     onClick={() => setRedFlagFocus((prev) => !prev)}
                     className={`px-3 py-1.5 rounded-lg text-sm border transition ${
                       redFlagFocus
-                        ? "bg-red-900/40 border-red-500/60 text-red-200"
+                        ? "bg-red-900/40 border-red-500/60 text-white force-white"
                         : "bg-zinc-900 border-zinc-700 text-zinc-300"
                     }`}
                   >
@@ -1730,6 +2371,9 @@ Return only JSON with this exact shape:
                         <p className="text-zinc-400 mt-1">
                           Reason: {session.endedReason} · Elapsed: {session.elapsedSeconds}s /{" "}
                           {session.plannedSeconds}s
+                        </p>
+                        <p className="text-zinc-500 mt-1 text-xs">
+                          Level: {session.trainingConfig?.level ?? "n/a"} · Adaptive mode: {session.adaptiveProfile?.qualityBand ?? "n/a"}
                         </p>
                         <p className="text-zinc-300 mt-2">{session.evaluation.summary}</p>
                         <div className="mt-3 flex flex-wrap gap-2">
@@ -1759,19 +2403,6 @@ Return only JSON with this exact shape:
                 </div>
               </section>
 
-              <section className="rounded-2xl border border-zinc-800 bg-zinc-950 p-4">
-                <h3 className="text-xl font-semibold mb-3">Call Log (Latest 100)</h3>
-                <div className="space-y-2 max-h-72 overflow-y-auto pr-1 text-xs font-mono">
-                  {[...callLogs].slice(-100).reverse().map((entry) => (
-                    <div key={entry.id} className="bg-zinc-900 border border-zinc-800 rounded-lg p-3">
-                      <p className="text-zinc-300">
-                        {entry.timestamp} · {entry.type} · {entry.status}
-                      </p>
-                      {entry.details && <p className="text-zinc-500 mt-1">{entry.details}</p>}
-                    </div>
-                  ))}
-                </div>
-              </section>
             </div>
           </section>
         </main>
