@@ -16,5 +16,9 @@ View your app in AI Studio: https://ai.studio/apps/05541fad-a7e4-4cf6-8d15-e3124
 1. Install dependencies:
    `npm install`
 2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
+3. (Optional) Enable cloud sync with Supabase in `.env.local`:
+   `SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co`
+   `SUPABASE_SECRET_KEY=sb_secret_xxx`
+4. Run `supabase/coach_state.sql` in your Supabase SQL editor (one-time setup)
+5. Run the app:
    `npm run dev`

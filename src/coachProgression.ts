@@ -29,10 +29,29 @@ const clamp = (value: number): number => Math.max(1, Math.min(5, Math.round(valu
 const avg = (values: number[]): number =>
   values.length === 0 ? 0 : values.reduce((sum, value) => sum + value, 0) / values.length;
 
+const isTestingLevelUnlockEnabled = (): boolean => {
+  const viteEnv = (
+    import.meta as unknown as { env?: Record<string, string | undefined> }
+  ).env;
+  const raw =
+    viteEnv?.VITE_UNLOCK_ALL_LEVELS ??
+    (typeof process !== "undefined" ? process.env.VITE_UNLOCK_ALL_LEVELS : undefined) ??
+    "";
+  return ["1", "true", "yes", "on"].includes(raw.trim().toLowerCase());
+};
+
 export const levelLabel = (level: CoachLevel): string =>
   level === "novice" ? "Novice" : level === "intermediate" ? "Intermediate" : "Advanced";
 
 export const buildUnlockState = (sessions: SessionRecord[]): UnlockState => {
+  if (isTestingLevelUnlockEnabled()) {
+    return {
+      unlockedLevels: [...LEVELS],
+      recommendedLevel: "advanced",
+      rationale: "Testing override active: all training levels are unlocked.",
+    };
+  }
+
   if (sessions.length === 0) {
     return {
       unlockedLevels: ["novice"],

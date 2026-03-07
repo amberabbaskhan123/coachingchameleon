@@ -59,6 +59,21 @@ test("buildUnlockState unlocks advanced with stronger rubric trend", () => {
   assert.equal(unlock.recommendedLevel, "advanced");
 });
 
+test("buildUnlockState unlocks all levels when testing override is enabled", () => {
+  const previous = process.env.VITE_UNLOCK_ALL_LEVELS;
+  process.env.VITE_UNLOCK_ALL_LEVELS = "true";
+
+  const unlock = buildUnlockState([]);
+  assert.deepEqual(unlock.unlockedLevels, ["novice", "intermediate", "advanced"]);
+  assert.equal(unlock.recommendedLevel, "advanced");
+
+  if (typeof previous === "undefined") {
+    delete process.env.VITE_UNLOCK_ALL_LEVELS;
+  } else {
+    process.env.VITE_UNLOCK_ALL_LEVELS = previous;
+  }
+});
+
 test("buildLevelInstruction encodes challenge dimensions", () => {
   const instruction = buildLevelInstruction("advanced", {
     ambiguity: 5,

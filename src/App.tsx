@@ -16,7 +16,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { GoogleGenAI, Modality, LiveServerMessage } from "@google/genai";
-import { customRubric } from './rubric';
+import { getRubricForLevel } from './rubric';
 import { scenarios } from './scenarios';
 import {
   buildCompetencyMomentum,
@@ -45,6 +45,7 @@ import {
   parseWildcardScenario,
 } from './wildcard';
 import { normalizeTheme, toggleTheme, type AppTheme } from './theme';
+import { loadCloudState, saveCloudState } from './supabaseStore';
 import {
   buildAdaptiveClientDirective,
   createCoachSignalState,
@@ -192,6 +193,8 @@ type LoginSession = {
   email: string;
   signedInAt: string;
 };
+
+type CloudSyncStatus = "local" | "syncing" | "cloud";
 
 const encouragementLine = (
   metric: EvaluationMetric,
@@ -397,6 +400,7 @@ export default function App() {
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [loginError, setLoginError] = useState("");
+  const [cloudSyncStatus, setCloudSyncStatus] = useState<CloudSyncStatus>("local");
   const [activeView, setActiveView] = useState<"practice" | "dashboard">("practice");
   const [redFlagFocus, setRedFlagFocus] = useState(false);
   const [sessionHistory, setSessionHistory] = useState<SessionRecord[]>(() =>
@@ -420,6 +424,7 @@ export default function App() {
   const messageCountRef = useRef(0);
   const remoteCloseExpectedRef = useRef(false);
   const coachSignalRef = useRef(createCoachSignalState());
+  const cloudSyncBootstrappedRef = useRef(false);
   const sessionHistorySectionRef = useRef<HTMLElement | null>(null);
 
   const setFallbackScenario = () => {
@@ -460,6 +465,66 @@ export default function App() {
   useEffect(() => {
     writeJsonStorage(STORAGE_KEYS.auth, loginSession);
   }, [loginSession]);
+
+  useEffect(() => {
+    if (!loginSession?.email) {
+      setCloudSyncStatus("local");
+      cloudSyncBootstrappedRef.current = false;
+      return;
+    }
+
+    let cancelled = false;
+    setCloudSyncStatus("syncing");
+    cloudSyncBootstrappedRef.current = false;
+
+    void (async () => {
+      try {
+        const remoteState = await loadCloudState(loginSession.email);
+        if (cancelled) return;
+
+        if (remoteState) {
+          setSessionHistory(remoteState.sessions);
+          setCallLogs(remoteState.callLogs);
+          setCloudSyncStatus("cloud");
+        } else {
+          setCloudSyncStatus("local");
+        }
+      } catch (error) {
+        console.error("Supabase load failed:", error);
+        if (!cancelled) {
+          setCloudSyncStatus("local");
+        }
+      } finally {
+        if (!cancelled) {
+          cloudSyncBootstrappedRef.current = true;
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [loginSession?.email]);
+
+  useEffect(() => {
+    if (!loginSession?.email) return;
+    if (!cloudSyncBootstrappedRef.current) return;
+
+    const timeout = window.setTimeout(() => {
+      void (async () => {
+        try {
+          setCloudSyncStatus("syncing");
+          await saveCloudState(loginSession.email, sessionHistory, callLogs);
+          setCloudSyncStatus("cloud");
+        } catch (error) {
+          console.error("Supabase save failed:", error);
+          setCloudSyncStatus("local");
+        }
+      })();
+    }, 900);
+
+    return () => window.clearTimeout(timeout);
+  }, [loginSession?.email, sessionHistory, callLogs]);
 
   useEffect(() => {
     transcriptRef.current = transcript;
@@ -1072,10 +1137,12 @@ ${buildAdaptiveClientDirective(coachSignalRef.current)}
     addCallLog("evaluation.generate", "started", `reason=${endedReason}`);
     setIsEvaluating(true);
     try {
+      const rubricForLevel = getRubricForLevel(coachLevel);
       const response = await ai.models.generateContent({
         model: CONTENT_MODEL,
         contents: `Evaluate this coaching transcript: ${finalTranscript}.
-Score the coach against this rubric: ${JSON.stringify(customRubric)}.
+Training level for this attempt: ${levelLabel(coachLevel)}.
+Score the coach against this rubric: ${JSON.stringify(rubricForLevel)}.
 Calibrate your scoring against these expert benchmark anchors: ${JSON.stringify(expertCalibrationBenchmarks)}.
 Do NOT use ICF language in labels.
 Use explicit evidence references (short transcript snippets) for each metric and estimate scoring confidence.
@@ -1450,6 +1517,24 @@ Return only JSON with this exact shape:
         <div className="flex flex-wrap gap-2">
           <p className="px-3 py-2 rounded-xl bg-zinc-900 border border-zinc-700 text-zinc-300 text-sm">
             {loginSession.email}
+          </p>
+          <p
+            className={`px-3 py-2 rounded-xl border text-sm ${
+              cloudSyncStatus === "cloud"
+                ? "bg-emerald-900/30 border-emerald-700 text-emerald-200"
+                : cloudSyncStatus === "syncing"
+                  ? "bg-cyan-900/30 border-cyan-700 text-cyan-200"
+                  : "bg-zinc-900 border-zinc-700 text-zinc-300"
+            }`}
+            title="Supabase sync status"
+          >
+            Cloud: {
+              cloudSyncStatus === "cloud"
+                ? "Connected"
+                : cloudSyncStatus === "syncing"
+                  ? "Syncing"
+                  : "Local Only"
+            }
           </p>
           <button
             onClick={() => setTheme((prev) => toggleTheme(prev))}

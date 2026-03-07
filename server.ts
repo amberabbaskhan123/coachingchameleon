@@ -1,10 +1,51 @@
 import express from "express";
 import { createServer as createViteServer } from "vite";
 import { Request, Response } from "express";
+import dotenv from "dotenv";
+
+dotenv.config({ path: ".env.local" });
+dotenv.config();
+
+const SUPABASE_URL = (
+  process.env.SUPABASE_URL ??
+  process.env.VITE_SUPABASE_URL ??
+  ""
+).trim();
+const SUPABASE_SECRET_KEY = (
+  process.env.SUPABASE_SECRET_KEY ??
+  process.env.SUPABASE_SERVICE_ROLE_KEY ??
+  ""
+).trim();
+
+const hasSupabaseServerConfig = (): boolean =>
+  Boolean(SUPABASE_URL && SUPABASE_SECRET_KEY);
+
+const isJwtApiKey = (key: string): boolean => {
+  const trimmed = key.trim();
+  if (!trimmed) return false;
+  // Legacy anon/service_role keys are JWTs. New sb_secret/sb_publishable keys are not.
+  return trimmed.split(".").length === 3;
+};
+
+const supabaseHeaders = (): Record<string, string> => {
+  const headers: Record<string, string> = {
+    apikey: SUPABASE_SECRET_KEY,
+    "Content-Type": "application/json",
+  };
+
+  if (isJwtApiKey(SUPABASE_SECRET_KEY)) {
+    headers.Authorization = `Bearer ${SUPABASE_SECRET_KEY}`;
+  }
+
+  return headers;
+};
+
+const supabaseTableUrl = (): string =>
+  `${SUPABASE_URL.replace(/\/$/, "")}/rest/v1/coach_state`;
 
 async function startServer() {
   const app = express();
-  app.use(express.json());
+  app.use(express.json({ limit: "10mb" }));
   const PORT = 3000;
 
   // API routes
@@ -132,6 +173,86 @@ async function startServer() {
     ];
 
     res.json(analysis);
+  });
+
+  app.get("/api/cloud_state", async (req: Request, res: Response) => {
+    if (!hasSupabaseServerConfig()) {
+      return res.status(503).json({ error: "supabase_not_configured" });
+    }
+
+    const userEmail = String(req.query.userEmail ?? "").trim().toLowerCase();
+    if (!userEmail) {
+      return res.status(400).json({ error: "userEmail is required" });
+    }
+
+    try {
+      const params = new URLSearchParams({
+        select: "sessions,call_logs,updated_at",
+        user_email: `eq.${userEmail}`,
+        limit: "1",
+      });
+      const response = await fetch(`${supabaseTableUrl()}?${params.toString()}`, {
+        method: "GET",
+        headers: supabaseHeaders(),
+      });
+
+      if (!response.ok) {
+        const details = await response.text();
+        return res.status(response.status).json({ error: details || "supabase_get_failed" });
+      }
+
+      const data = await response.json();
+      return res.json({ data });
+    } catch (error) {
+      return res.status(500).json({ error: String(error) });
+    }
+  });
+
+  app.post("/api/cloud_state", async (req: Request, res: Response) => {
+    if (!hasSupabaseServerConfig()) {
+      return res.status(503).json({ error: "supabase_not_configured" });
+    }
+
+    const userEmail = String(req.body?.user_email ?? req.body?.userEmail ?? "")
+      .trim()
+      .toLowerCase();
+
+    if (!userEmail) {
+      return res.status(400).json({ error: "user_email is required" });
+    }
+
+    const payload = [
+      {
+        user_email: userEmail,
+        sessions: Array.isArray(req.body?.sessions) ? req.body.sessions : [],
+        call_logs: Array.isArray(req.body?.call_logs)
+          ? req.body.call_logs
+          : Array.isArray(req.body?.callLogs)
+            ? req.body.callLogs
+            : [],
+        updated_at: new Date().toISOString(),
+      },
+    ];
+
+    try {
+      const response = await fetch(`${supabaseTableUrl()}?on_conflict=user_email`, {
+        method: "POST",
+        headers: {
+          ...supabaseHeaders(),
+          Prefer: "resolution=merge-duplicates,return=minimal",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const details = await response.text();
+        return res.status(response.status).json({ error: details || "supabase_save_failed" });
+      }
+
+      return res.json({ ok: true });
+    } catch (error) {
+      return res.status(500).json({ error: String(error) });
+    }
   });
 
   // Vite middleware for development
