@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   fallbackWildcardScenario,
+  formatWildcardScenario,
   hasUsableApiKey,
   parseWildcardScenario,
 } from "./wildcard";
@@ -22,6 +23,25 @@ test("parseWildcardScenario parses fenced JSON responses", () => {
     '```json\n{"title":"T","summary":"S","persona":"P"}\n```',
   );
   assert.deepEqual(scenario, { title: "T", summary: "S", persona: "P" });
+});
+
+test("parseWildcardScenario normalizes second-person persona text", () => {
+  const scenario = parseWildcardScenario(
+    '{"title":"T","summary":"S","persona":"You are unsure if your decision is right. You keep doubting yourself."}',
+  );
+  assert.equal(
+    scenario.persona,
+    "the client is unsure if the client's decision is right. the client keep doubting themself.",
+  );
+});
+
+test("formatWildcardScenario normalizes persona perspective", () => {
+  const rendered = formatWildcardScenario({
+    title: "T",
+    summary: "S",
+    persona: "You're exploring your options, and you've delayed action.",
+  });
+  assert.match(rendered, /Persona: the client is exploring the client's options, and the client has delayed action\./);
 });
 
 test("fallbackWildcardScenario returns complete scenario data", () => {

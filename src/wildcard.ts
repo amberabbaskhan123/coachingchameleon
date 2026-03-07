@@ -12,6 +12,26 @@ export type WildcardScenario = {
 
 const PLACEHOLDER_KEYS = new Set(["", "MY_GEMINI_API_KEY", "dummy"]);
 
+const normalizeWildcardPersona = (persona: string): string => {
+  const replacements: Array<[RegExp, string]> = [
+    [/\b[Yy]ou are\b/g, "the client is"],
+    [/\b[Yy]ou['’]re\b/g, "the client is"],
+    [/\b[Yy]ou['’]ve\b/g, "the client has"],
+    [/\b[Yy]ou['’]ll\b/g, "the client will"],
+    [/\b[Yy]ou['’]d\b/g, "the client would"],
+    [/\b[Yy]ourself\b/g, "themself"],
+    [/\b[Yy]ours\b/g, "the client's"],
+    [/\b[Yy]our\b/g, "the client's"],
+    [/\b[Yy]ou\b/g, "the client"],
+  ];
+
+  return replacements.reduce(
+    (normalized, [pattern, replacement]) =>
+      normalized.replace(pattern, replacement),
+    persona,
+  );
+};
+
 export function hasUsableApiKey(apiKey: string | undefined): boolean {
   return !PLACEHOLDER_KEYS.has((apiKey ?? "").trim());
 }
@@ -30,7 +50,7 @@ export function parseWildcardScenario(text: string): WildcardScenario {
   const parsed = JSON.parse(extractJsonBlob(text)) as Partial<WildcardScenario>;
   const title = (parsed.title ?? "").trim();
   const summary = (parsed.summary ?? "").trim();
-  const persona = (parsed.persona ?? "").trim();
+  const persona = normalizeWildcardPersona((parsed.persona ?? "").trim());
 
   if (!title || !summary || !persona) {
     throw new Error("Wildcard scenario response is missing required fields.");
@@ -40,7 +60,8 @@ export function parseWildcardScenario(text: string): WildcardScenario {
 }
 
 export function formatWildcardScenario(scenario: ScenarioLike): string {
-  return `${scenario.title}\n\nSummary: ${scenario.summary}\n\nPersona: ${scenario.persona}`;
+  const normalizedPersona = normalizeWildcardPersona(scenario.persona);
+  return `${scenario.title}\n\nSummary: ${scenario.summary}\n\nPersona: ${normalizedPersona}`;
 }
 
 export function fallbackWildcardScenario(
@@ -58,6 +79,8 @@ export function fallbackWildcardScenario(
   return {
     title: `Wildcard: ${source.title}`,
     summary: `${source.summary} Add a surprising constraint: a key decision must be made in the next 24 hours.`,
-    persona: `${source.persona} You are motivated to improve but unsure what to prioritize first.`,
+    persona: normalizeWildcardPersona(
+      `${source.persona} The client is motivated to improve but unsure what to prioritize first.`,
+    ),
   };
 }

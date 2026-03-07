@@ -17,7 +17,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { GoogleGenAI, Modality, LiveServerMessage } from "@google/genai";
 import { customRubric } from './rubric';
-import { scenarios, type Scenario } from './scenarios';
+import { scenarios } from './scenarios';
 import {
   buildCompetencyMomentum,
   buildCompetencyTrendInsights,
@@ -168,15 +168,6 @@ const competencyShortLabel = (category: string): string => {
   if (category.includes("Awareness")) return "Awareness";
   return category.split(" ")[0] ?? "Skill";
 };
-
-const formatScenarioLibraryEntry = (entry: Scenario): string =>
-  `${entry.title}
-
-Summary: ${entry.summary}
-
-Persona: ${entry.persona}
-
-Primary competencies: ${entry.competencies.join(", ")}`;
 
 const challengeTone = (value: number): string => {
   if (value <= 2) return "Low";
@@ -393,7 +384,6 @@ export default function App() {
   const [challengeProfile, setChallengeProfile] = useState<ChallengeProfile>(
     DEFAULT_CHALLENGE_PROFILE,
   );
-  const [selectedScenarioId, setSelectedScenarioId] = useState("");
   const [timeLeft, setTimeLeft] = useState(0);
   const [scenario, setScenario] = useState('');
   const [isScenarioConfirmed, setIsScenarioConfirmed] = useState(false);
@@ -490,10 +480,6 @@ export default function App() {
     }
   }, [coachLevel, unlockState]);
 
-  useEffect(() => {
-    setSelectedScenarioId("");
-  }, [coachLevel]);
-
   const handleWildcard = async () => {
     setScenario("Generating wildcard scenario...");
     addCallLog("wildcard.generate", "started", `level=${coachLevel}`);
@@ -518,6 +504,8 @@ Requirements:
 - Keep it in coaching scope (no therapy).
 - Make client behavior adapt naturally to coaching quality.
 - Prioritize advanced nuance when level is Advanced.
+- Write persona in third-person and refer to the person as "the client", never "you".
+- Reflect the provided challenge profile values exactly in the persona details.
 
 Return only JSON with keys: title, summary, persona.`,
         config: { responseMimeType: "application/json" }
@@ -1307,9 +1295,7 @@ Return only JSON with this exact shape:
   const competencyTrends = buildCompetencyTrendInsights(sessionHistory);
   const learningSnapshot = buildLearningSnapshot(sessionHistory);
   const latestAdaptiveProfile = latestSession?.adaptiveProfile ?? null;
-  const scenarioLibrary = [...scenarios];
   const levelScenarios = scenarios.filter((entry) => entry.level === coachLevel);
-  const levelScenarioCount = levelScenarios.length;
   const weeklyTargetMinutes = 45;
   const practiceGoalProgress = Math.max(
     0,
@@ -1536,39 +1522,6 @@ Return only JSON with this exact shape:
             </button>
             <div className="rounded-xl border border-zinc-800 bg-zinc-950 p-3 space-y-2">
               <div className="flex items-center justify-between gap-2">
-                <p className="text-xs uppercase tracking-wide text-zinc-500">Scenario Library</p>
-                <p className="text-[11px] text-zinc-500">
-                  {scenarioLibrary.length} total • {levelScenarioCount} {levelLabel(coachLevel)}
-                </p>
-              </div>
-              <select
-                className="w-full p-2.5 rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-100"
-                value={selectedScenarioId}
-                disabled={isScenarioConfirmed}
-                onChange={(event) => {
-                  const nextId = event.target.value;
-                  setSelectedScenarioId(nextId);
-                  if (!nextId) return;
-                  const entry = scenarioLibrary.find((item) => item.id === nextId);
-                  if (entry) {
-                    setScenario(formatScenarioLibraryEntry(entry));
-                    addCallLog("scenario.library.load", "success", `id=${entry.id} level=${entry.level}`);
-                  }
-                }}
-              >
-                <option value="">Select a scenario template</option>
-                {scenarioLibrary.map((entry) => (
-                  <option key={entry.id} value={entry.id}>
-                    [{levelLabel(entry.level)}] {entry.title}
-                  </option>
-                ))}
-              </select>
-              <p className="text-[11px] text-zinc-500">
-                Loads title, summary, persona, and target competencies into the scenario box.
-              </p>
-            </div>
-            <div className="rounded-xl border border-zinc-800 bg-zinc-950 p-3 space-y-2">
-              <div className="flex items-center justify-between gap-2">
                 <p className="text-xs uppercase tracking-wide text-zinc-500">Training Level</p>
                 <p className="text-[11px] text-zinc-500">{unlockState.rationale}</p>
               </div>
@@ -1587,9 +1540,6 @@ Return only JSON with this exact shape:
                   );
                 })}
               </select>
-              <p className="text-[11px] text-zinc-500">
-                {levelScenarioCount} curated {coachLevel} scenario{levelScenarioCount === 1 ? "" : "s"} available.
-              </p>
               <div className="grid grid-cols-2 gap-2">
                 {(
                   [
@@ -1609,7 +1559,7 @@ Return only JSON with this exact shape:
                       min={1}
                       max={5}
                       value={challengeProfile[key]}
-                      disabled={isScenarioConfirmed}
+                      disabled={isConnected}
                       onChange={(event) =>
                         setChallengeProfile((prev) => ({
                           ...prev,
@@ -1637,7 +1587,7 @@ Return only JSON with this exact shape:
               className="w-full p-3 rounded-xl bg-zinc-900 border border-zinc-800 text-zinc-100"
               value={duration}
               onChange={(e) => setDuration(Number(e.target.value))}
-              disabled={isScenarioConfirmed}
+              disabled={isConnected}
             >
               <option value={10}>10 Minutes</option>
               <option value={20}>20 Minutes</option>
