@@ -2,10 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   loadCloudState,
+  mergeCloudState,
   normalizeCloudState,
   saveCloudState,
   type CloudState,
 } from "./supabaseStore";
+import type { CallLogEntry, SessionRecord } from "./sessionData";
 
 test("normalizeCloudState supports row object shape", () => {
   const normalized = normalizeCloudState({
@@ -93,4 +95,72 @@ test("saveCloudState treats 404 cloud route as not configured", async () => {
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+const createSession = (
+  id: string,
+  endedAt: string,
+  score = 6,
+): SessionRecord => ({
+  id,
+  startedAt: "2026-03-07T10:00:00.000Z",
+  endedAt,
+  plannedSeconds: 600,
+  elapsedSeconds: 580,
+  endedReason: "timer_elapsed",
+  scenario: "Scenario",
+  transcript: "Coach: hi\nClient: hey",
+  evaluation: {
+    summary: "Summary",
+    recommendations: [],
+    redFlags: [],
+    averageScore: score,
+    metrics: [],
+  },
+});
+
+const createLog = (
+  id: string,
+  timestamp: string,
+  status: CallLogEntry["status"] = "info",
+): CallLogEntry => ({
+  id,
+  timestamp,
+  type: "session.finalize",
+  status,
+});
+
+test("mergeCloudState keeps local data when remote is empty", () => {
+  const localSessions = [createSession("s-local", "2026-03-07T10:10:00.000Z")];
+  const localLogs = [createLog("l-local", "2026-03-07T10:11:00.000Z")];
+  const merged = mergeCloudState(localSessions, localLogs, { sessions: [], callLogs: [] });
+
+  assert.equal(merged.sessions.length, 1);
+  assert.equal(merged.sessions[0]?.id, "s-local");
+  assert.equal(merged.callLogs.length, 1);
+  assert.equal(merged.callLogs[0]?.id, "l-local");
+});
+
+test("mergeCloudState de-duplicates and keeps latest record for matching ids", () => {
+  const localSessions = [createSession("s1", "2026-03-07T10:10:00.000Z", 5)];
+  const remoteSessions = [
+    createSession("s1", "2026-03-07T10:15:00.000Z", 8),
+    createSession("s2", "2026-03-07T11:00:00.000Z", 7),
+  ];
+  const localLogs = [createLog("l1", "2026-03-07T10:11:00.000Z")];
+  const remoteLogs = [createLog("l1", "2026-03-07T10:12:00.000Z"), createLog("l2", "2026-03-07T11:02:00.000Z")];
+
+  const merged = mergeCloudState(localSessions, localLogs, {
+    sessions: remoteSessions,
+    callLogs: remoteLogs,
+  });
+
+  assert.equal(merged.sessions.length, 2);
+  const s1 = merged.sessions.find((session) => session.id === "s1");
+  assert.equal(s1?.endedAt, "2026-03-07T10:15:00.000Z");
+  assert.equal(s1?.evaluation.averageScore, 8);
+
+  assert.equal(merged.callLogs.length, 2);
+  const l1 = merged.callLogs.find((entry) => entry.id === "l1");
+  assert.equal(l1?.timestamp, "2026-03-07T10:12:00.000Z");
 });

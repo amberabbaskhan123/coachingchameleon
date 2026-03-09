@@ -45,7 +45,8 @@ import {
   parseWildcardScenario,
 } from './wildcard';
 import { normalizeTheme, toggleTheme, type AppTheme } from './theme';
-import { loadCloudState, saveCloudState } from './supabaseStore';
+import { loadCloudState, mergeCloudState, saveCloudState } from './supabaseStore';
+import { int16PcmToBase64 } from './audioEncoding';
 import {
   buildAdaptiveClientDirective,
   createCoachSignalState,
@@ -483,8 +484,9 @@ export default function App() {
         if (cancelled) return;
 
         if (remoteState) {
-          setSessionHistory(remoteState.sessions);
-          setCallLogs(remoteState.callLogs);
+          const merged = mergeCloudState(sessionHistory, callLogs, remoteState);
+          setSessionHistory(merged.sessions);
+          setCallLogs(merged.callLogs);
           setCloudSyncStatus("cloud");
         } else {
           setCloudSyncStatus("local");
@@ -774,8 +776,12 @@ Return only JSON with keys: title, summary, persona.`,
                 pcmData[i] = inputData[i] * 32768;
               }
               
-              const base64Data = btoa(String.fromCharCode(...new Uint8Array(pcmData.buffer)));
-              sessionRef.current.sendRealtimeInput({ media: { data: base64Data, mimeType: 'audio/pcm;rate=16000' } });
+              try {
+                const base64Data = int16PcmToBase64(pcmData);
+                sessionRef.current.sendRealtimeInput({ media: { data: base64Data, mimeType: 'audio/pcm;rate=16000' } });
+              } catch (micSendError) {
+                addCallLog("session.input_stream", "error", String(micSendError));
+              }
             };
             
           },

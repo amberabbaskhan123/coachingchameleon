@@ -21,6 +21,85 @@ const isObject = (value: unknown): value is Record<string, unknown> =>
 const asArray = <T>(value: unknown): T[] =>
   Array.isArray(value) ? (value as T[]) : [];
 
+const coalesceTime = (value: string | undefined): string =>
+  typeof value === "string" && value.trim() ? value : "";
+
+const sessionRecency = (session: SessionRecord): string =>
+  coalesceTime(session.endedAt) || coalesceTime(session.startedAt);
+
+const logRecency = (entry: CallLogEntry): string => coalesceTime(entry.timestamp);
+
+const mergeSessions = (
+  localSessions: SessionRecord[],
+  remoteSessions: SessionRecord[],
+): SessionRecord[] => {
+  const byId = new Map<string, SessionRecord>();
+  const unordered: SessionRecord[] = [];
+
+  const upsert = (session: SessionRecord) => {
+    const key = session.id?.trim();
+    if (!key) {
+      unordered.push(session);
+      return;
+    }
+    const existing = byId.get(key);
+    if (!existing) {
+      byId.set(key, session);
+      return;
+    }
+    byId.set(
+      key,
+      sessionRecency(session) >= sessionRecency(existing) ? session : existing,
+    );
+  };
+
+  for (const session of localSessions) upsert(session);
+  for (const session of remoteSessions) upsert(session);
+
+  return [...unordered, ...byId.values()].sort((a, b) =>
+    sessionRecency(a).localeCompare(sessionRecency(b)),
+  );
+};
+
+const mergeCallLogs = (
+  localLogs: CallLogEntry[],
+  remoteLogs: CallLogEntry[],
+): CallLogEntry[] => {
+  const byKey = new Map<string, CallLogEntry>();
+
+  const upsert = (entry: CallLogEntry) => {
+    const fallbackKey = [
+      entry.timestamp,
+      entry.type,
+      entry.status,
+      entry.details ?? "",
+    ].join("|");
+    const key = entry.id?.trim() || fallbackKey;
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, entry);
+      return;
+    }
+    byKey.set(key, logRecency(entry) >= logRecency(existing) ? entry : existing);
+  };
+
+  for (const entry of localLogs) upsert(entry);
+  for (const entry of remoteLogs) upsert(entry);
+
+  return [...byKey.values()]
+    .sort((a, b) => logRecency(a).localeCompare(logRecency(b)))
+    .slice(-1000);
+};
+
+export const mergeCloudState = (
+  localSessions: SessionRecord[],
+  localCallLogs: CallLogEntry[],
+  remoteState: NormalizedCloudState | null,
+): NormalizedCloudState => ({
+  sessions: mergeSessions(localSessions, remoteState?.sessions ?? []),
+  callLogs: mergeCallLogs(localCallLogs, remoteState?.callLogs ?? []),
+});
+
 const isFallbackBody = (body: string): boolean =>
   /supabase_not_configured|cannot (get|post) \/api\/cloud_state|not found/i.test(
     body,
