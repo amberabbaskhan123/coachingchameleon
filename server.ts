@@ -40,8 +40,8 @@ const supabaseHeaders = (): Record<string, string> => {
   return headers;
 };
 
-const supabaseTableUrl = (): string =>
-  `${SUPABASE_URL.replace(/\/$/, "")}/rest/v1/coach_state`;
+const supabaseRestTableUrl = (table: string): string =>
+  `${SUPABASE_URL.replace(/\/$/, "")}/rest/v1/${table}`;
 
 async function startServer() {
   const app = express();
@@ -191,7 +191,7 @@ async function startServer() {
         user_email: `eq.${userEmail}`,
         limit: "1",
       });
-      const response = await fetch(`${supabaseTableUrl()}?${params.toString()}`, {
+      const response = await fetch(`${supabaseRestTableUrl("coach_state")}?${params.toString()}`, {
         method: "GET",
         headers: supabaseHeaders(),
       });
@@ -235,7 +235,7 @@ async function startServer() {
     ];
 
     try {
-      const response = await fetch(`${supabaseTableUrl()}?on_conflict=user_email`, {
+      const response = await fetch(`${supabaseRestTableUrl("coach_state")}?on_conflict=user_email`, {
         method: "POST",
         headers: {
           ...supabaseHeaders(),
@@ -247,6 +247,165 @@ async function startServer() {
       if (!response.ok) {
         const details = await response.text();
         return res.status(response.status).json({ error: details || "supabase_save_failed" });
+      }
+
+      return res.json({ ok: true });
+    } catch (error) {
+      return res.status(500).json({ error: String(error) });
+    }
+  });
+
+  app.post("/api/login_event", async (req: Request, res: Response) => {
+    if (!hasSupabaseServerConfig()) {
+      return res.status(503).json({ error: "supabase_not_configured" });
+    }
+
+    const userEmail = String(req.body?.user_email ?? "")
+      .trim()
+      .toLowerCase();
+    const loginAt = String(req.body?.login_at ?? "").trim();
+
+    if (!userEmail) {
+      return res.status(400).json({ error: "user_email is required" });
+    }
+    if (!loginAt) {
+      return res.status(400).json({ error: "login_at is required" });
+    }
+
+    const asLevel = (value: unknown): number => {
+      const num = Number(value);
+      if (!Number.isFinite(num)) return 1;
+      return Math.max(1, Math.min(5, Math.round(num)));
+    };
+
+    const sessionDurationMinutes = Number(req.body?.session_duration_minutes ?? 0);
+    if (!Number.isFinite(sessionDurationMinutes) || sessionDurationMinutes <= 0) {
+      return res.status(400).json({ error: "session_duration_minutes must be > 0" });
+    }
+
+    const payload = [
+      {
+        user_email: userEmail,
+        login_at: loginAt,
+        coaching_scenario_description: String(req.body?.coaching_scenario_description ?? ""),
+        wildcard_scenario_description: String(req.body?.wildcard_scenario_description ?? ""),
+        level_selected: String(req.body?.level_selected ?? ""),
+        ambiguity_level: asLevel(req.body?.ambiguity_level),
+        resistance_level: asLevel(req.body?.resistance_level),
+        emotional_volatility_level: asLevel(req.body?.emotional_volatility_level),
+        goal_conflict_level: asLevel(req.body?.goal_conflict_level),
+        ai_agent_selected: String(req.body?.ai_agent_selected ?? ""),
+        ai_model_selected: String(req.body?.ai_model_selected ?? ""),
+        session_duration_minutes: Math.round(sessionDurationMinutes),
+        timezone: String(req.body?.timezone ?? ""),
+      },
+    ];
+
+    try {
+      const response = await fetch(supabaseRestTableUrl("login_events"), {
+        method: "POST",
+        headers: {
+          ...supabaseHeaders(),
+          Prefer: "return=minimal",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const details = await response.text();
+        return res.status(response.status).json({ error: details || "supabase_login_event_failed" });
+      }
+
+      return res.json({ ok: true });
+    } catch (error) {
+      return res.status(500).json({ error: String(error) });
+    }
+  });
+
+  app.post("/api/dashboard_snapshot", async (req: Request, res: Response) => {
+    if (!hasSupabaseServerConfig()) {
+      return res.status(503).json({ error: "supabase_not_configured" });
+    }
+
+    const userEmail = String(req.body?.user_email ?? "")
+      .trim()
+      .toLowerCase();
+    const snapshotAt = String(req.body?.snapshot_at ?? "").trim();
+
+    if (!userEmail) {
+      return res.status(400).json({ error: "user_email is required" });
+    }
+    if (!snapshotAt) {
+      return res.status(400).json({ error: "snapshot_at is required" });
+    }
+
+    const asNumber = (value: unknown, fallback = 0): number => {
+      const num = Number(value);
+      if (!Number.isFinite(num)) return fallback;
+      return num;
+    };
+    const asInt = (value: unknown, fallback = 0): number =>
+      Math.round(asNumber(value, fallback));
+    const clamp = (value: number, min: number, max: number): number =>
+      Math.max(min, Math.min(max, value));
+    const asPercent = (value: unknown): number =>
+      clamp(asInt(value, 0), 0, 100);
+    const asJsonArray = (value: unknown): unknown[] =>
+      Array.isArray(value) ? value : [];
+    const asJsonObject = (value: unknown): Record<string, unknown> =>
+      typeof value === "object" && value !== null && !Array.isArray(value)
+        ? (value as Record<string, unknown>)
+        : {};
+
+    const payload = [
+      {
+        user_email: userEmail,
+        snapshot_at: snapshotAt,
+        timezone: String(req.body?.timezone ?? "UTC"),
+        ui_theme: String(req.body?.ui_theme ?? ""),
+        coach_level_selected: String(req.body?.coach_level_selected ?? ""),
+        ai_agent_selected: String(req.body?.ai_agent_selected ?? ""),
+        session_duration_minutes: Math.max(0, asInt(req.body?.session_duration_minutes, 0)),
+        scenario_current: String(req.body?.scenario_current ?? ""),
+        challenge_profile: asJsonObject(req.body?.challenge_profile),
+        total_sessions: Math.max(0, asInt(req.body?.total_sessions, 0)),
+        average_performance_percent: asPercent(req.body?.average_performance_percent),
+        overall_average_score: clamp(asNumber(req.body?.overall_average_score, 0), 0, 10),
+        latest_average_score: clamp(asNumber(req.body?.latest_average_score, 0), 0, 10),
+        total_red_flags: Math.max(0, asInt(req.body?.total_red_flags, 0)),
+        total_practice_minutes: Math.max(0, asInt(req.body?.total_practice_minutes, 0)),
+        practice_goal_progress: asPercent(req.body?.practice_goal_progress),
+        momentum_delta: asNumber(req.body?.momentum_delta, 0),
+        strongest_skill: String(req.body?.strongest_skill ?? ""),
+        strongest_skill_score: clamp(asNumber(req.body?.strongest_skill_score, 0), 0, 10),
+        focus_skill: String(req.body?.focus_skill ?? ""),
+        focus_skill_score: clamp(asNumber(req.body?.focus_skill_score, 0), 0, 10),
+        latest_quality_band: String(req.body?.latest_quality_band ?? ""),
+        latest_quality_score: clamp(asNumber(req.body?.latest_quality_score, 0), 0, 100),
+        score_history_points: asJsonArray(req.body?.score_history_points),
+        skill_breakdown: asJsonArray(req.body?.skill_breakdown),
+        competency_momentum: asJsonArray(req.body?.competency_momentum),
+        competency_trajectory: asJsonArray(req.body?.competency_trajectory),
+        learning_snapshot: asJsonObject(req.body?.learning_snapshot),
+        latest_feedback: asJsonObject(req.body?.latest_feedback),
+        top_recommendations: asJsonArray(req.body?.top_recommendations),
+        red_flag_frequency: asJsonArray(req.body?.red_flag_frequency),
+      },
+    ];
+
+    try {
+      const response = await fetch(supabaseRestTableUrl("dashboard_snapshots"), {
+        method: "POST",
+        headers: {
+          ...supabaseHeaders(),
+          Prefer: "return=minimal",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const details = await response.text();
+        return res.status(response.status).json({ error: details || "supabase_dashboard_snapshot_failed" });
       }
 
       return res.json({ ok: true });

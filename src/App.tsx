@@ -45,7 +45,15 @@ import {
   parseWildcardScenario,
 } from './wildcard';
 import { normalizeTheme, toggleTheme, type AppTheme } from './theme';
-import { loadCloudState, mergeCloudState, saveCloudState } from './supabaseStore';
+import {
+  loadCloudState,
+  mergeCloudState,
+  saveDashboardSnapshot,
+  saveCloudState,
+  saveLoginEvent,
+  type DashboardSnapshotPayload,
+  type LoginEventPayload,
+} from './supabaseStore';
 import { int16PcmToBase64 } from './audioEncoding';
 import {
   buildAdaptiveClientDirective,
@@ -67,6 +75,7 @@ import { applyCalibration, expertCalibrationBenchmarks } from './calibration';
 const GEMINI_API_KEY = (process.env.GEMINI_API_KEY ?? '').trim();
 const ai = hasUsableApiKey(GEMINI_API_KEY) ? new GoogleGenAI({ apiKey: GEMINI_API_KEY }) : null;
 const CONTENT_MODEL = "gemini-2.5-flash";
+const LIVE_AUDIO_MODEL = "gemini-2.5-flash-native-audio-preview-09-2025";
 const STORAGE_KEYS = {
   sessions: "coaching_chameleon_sessions_v1",
   callLogs: "coaching_chameleon_call_logs_v1",
@@ -390,6 +399,7 @@ export default function App() {
   );
   const [timeLeft, setTimeLeft] = useState(0);
   const [scenario, setScenario] = useState('');
+  const [wildcardScenarioDescription, setWildcardScenarioDescription] = useState('');
   const [isScenarioConfirmed, setIsScenarioConfirmed] = useState(false);
   const [voice, setVoice] = useState('Zephyr');
   const [theme, setTheme] = useState<AppTheme>(() =>
@@ -433,7 +443,9 @@ export default function App() {
     const localScenario = fallbackWildcardScenario(
       levelScenarios.length > 0 ? levelScenarios : scenarios,
     );
-    setScenario(formatWildcardScenario(localScenario));
+    const formatted = formatWildcardScenario(localScenario);
+    setScenario(formatted);
+    setWildcardScenarioDescription(formatted);
   };
 
   const addCallLog = (
@@ -579,7 +591,9 @@ Return only JSON with keys: title, summary, persona.`,
       });
       
       const wildcardScenario = parseWildcardScenario(response.text ?? "");
-      setScenario(formatWildcardScenario(wildcardScenario));
+      const formatted = formatWildcardScenario(wildcardScenario);
+      setScenario(formatted);
+      setWildcardScenarioDescription(formatted);
       addCallLog("wildcard.generate", "success");
     } catch (e) {
       console.error("Failed to generate wildcard scenario:", e);
@@ -721,7 +735,7 @@ Return only JSON with keys: title, summary, persona.`,
       audioChunksRef.current = [];
       const levelInstruction = buildLevelInstruction(coachLevel, challengeProfile);
       const sessionPromise = ai.live.connect({
-        model: "gemini-2.5-flash-native-audio-preview-09-2025",
+        model: LIVE_AUDIO_MODEL,
         callbacks: {
           onopen: async () => {
             addLog("Session opened");
@@ -1410,6 +1424,91 @@ Return only JSON with this exact shape:
     URL.revokeObjectURL(url);
   };
 
+  useEffect(() => {
+    if (!loginSession?.email) return;
+    if (activeView !== "dashboard") return;
+
+    const payload: DashboardSnapshotPayload = {
+      user_email: loginSession.email,
+      snapshot_at: new Date().toISOString(),
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+      ui_theme: theme,
+      coach_level_selected: coachLevel,
+      ai_agent_selected: voice,
+      session_duration_minutes: duration,
+      scenario_current: scenario.trim(),
+      challenge_profile: challengeProfile,
+      total_sessions: progressSummary.totalSessions,
+      average_performance_percent: averagePerformancePercent,
+      overall_average_score: progressSummary.overallAverageScore,
+      latest_average_score: progressSummary.latestAverageScore,
+      total_red_flags: progressSummary.totalRedFlags,
+      total_practice_minutes: totalPracticeMinutes,
+      practice_goal_progress: practiceGoalProgress,
+      momentum_delta: dashboardAnalytics.momentumDelta,
+      strongest_skill: strongestSkill?.category ?? "",
+      strongest_skill_score: strongestSkill?.score ?? 0,
+      focus_skill: focusSkill?.category ?? "",
+      focus_skill_score: focusSkill?.score ?? 0,
+      latest_quality_band: latestAdaptiveProfile?.qualityBand ?? "",
+      latest_quality_score: latestAdaptiveProfile?.qualityScore ?? 0,
+      score_history_points: scorePoints,
+      skill_breakdown: skillBreakdown,
+      competency_momentum: competencyMomentumData,
+      competency_trajectory: competencyTrends,
+      learning_snapshot: learningSnapshot,
+      latest_feedback: latestFeedback ?? {},
+      top_recommendations: topRecommendations.map(([recommendation, count]) => ({
+        recommendation,
+        count,
+      })),
+      red_flag_frequency: dashboardAnalytics.redFlagFrequency,
+    };
+
+    const timeout = window.setTimeout(() => {
+      void (async () => {
+        try {
+          await saveDashboardSnapshot(payload);
+        } catch (error) {
+          console.error("Supabase dashboard snapshot save failed:", error);
+        }
+      })();
+    }, 1200);
+
+    return () => window.clearTimeout(timeout);
+  }, [
+    loginSession?.email,
+    activeView,
+    theme,
+    coachLevel,
+    voice,
+    duration,
+    scenario,
+    challengeProfile,
+    progressSummary.totalSessions,
+    progressSummary.overallAverageScore,
+    progressSummary.latestAverageScore,
+    progressSummary.totalRedFlags,
+    averagePerformancePercent,
+    totalPracticeMinutes,
+    practiceGoalProgress,
+    dashboardAnalytics.momentumDelta,
+    dashboardAnalytics.redFlagFrequency,
+    strongestSkill?.category,
+    strongestSkill?.score,
+    focusSkill?.category,
+    focusSkill?.score,
+    latestAdaptiveProfile?.qualityBand,
+    latestAdaptiveProfile?.qualityScore,
+    latestFeedback,
+    scorePoints,
+    skillBreakdown,
+    competencyMomentumData,
+    competencyTrends,
+    learningSnapshot,
+    topRecommendations,
+  ]);
+
   const handleLoginSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const email = loginEmail.trim().toLowerCase();
@@ -1418,18 +1517,49 @@ Return only JSON with this exact shape:
       return;
     }
 
+    const loginAt = new Date().toISOString();
     setLoginSession({
       email,
-      signedInAt: new Date().toISOString(),
+      signedInAt: loginAt,
     });
     setLoginError("");
     setLoginPassword("");
+
+    const payload: LoginEventPayload = {
+      user_email: email,
+      login_at: loginAt,
+      coaching_scenario_description: scenario.trim(),
+      wildcard_scenario_description: wildcardScenarioDescription.trim(),
+      level_selected: coachLevel,
+      ambiguity_level: challengeProfile.ambiguity,
+      resistance_level: challengeProfile.resistance,
+      emotional_volatility_level: challengeProfile.emotionalVolatility,
+      goal_conflict_level: challengeProfile.goalConflict,
+      ai_agent_selected: voice,
+      ai_model_selected: LIVE_AUDIO_MODEL,
+      session_duration_minutes: duration,
+      timezone:
+        Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+    };
+
+    void (async () => {
+      try {
+        await saveLoginEvent(payload);
+        addCallLog("login.event", "success", `email=${email}`);
+      } catch (error) {
+        addCallLog("login.event", "fallback", String(error));
+        console.error("Supabase login event save failed:", error);
+      }
+    })();
   };
 
   const handleLogout = () => {
     setLoginSession(null);
     setLoginEmail("");
     setLoginPassword("");
+    setScenario("");
+    setWildcardScenarioDescription("");
+    setIsScenarioConfirmed(false);
     setActiveView("practice");
   };
 
@@ -1462,6 +1592,23 @@ Return only JSON with this exact shape:
               <div>
                 <h1 className="text-2xl font-semibold">KoMe Ai</h1>
                 <p className="text-sm text-zinc-400">Coach Practice Login</p>
+                <p
+                  className={`mt-2 text-sm leading-relaxed ${
+                    theme === "dark" ? "text-zinc-300" : "text-zinc-700"
+                  }`}
+                >
+                  KoMe Ai is a virtual coaching lab where you practice live coaching
+                  conversations with adaptive AI clients and get rubric-based feedback.
+                </p>
+                <p
+                  className={`mt-1 text-xs leading-relaxed ${
+                    theme === "dark" ? "text-zinc-400" : "text-zinc-600"
+                  }`}
+                >
+                  Built for coach trainees, aspiring coaches, and anyone looking to
+                  strengthen client-led coaching conversations and core coaching
+                  skills.
+                </p>
               </div>
             </div>
             <form className="mt-6 space-y-3" onSubmit={handleLoginSubmit}>
@@ -1591,7 +1738,10 @@ Return only JSON with this exact shape:
             </div>
             <textarea
               value={scenario}
-              onChange={(e) => setScenario(e.target.value)}
+              onChange={(e) => {
+                setScenario(e.target.value);
+                setWildcardScenarioDescription("");
+              }}
               placeholder="Describe the coaching scenario..."
               className="w-full p-5 rounded-2xl bg-zinc-900 border border-zinc-700 focus:ring-2 focus:ring-emerald-500 text-zinc-100 transition"
               rows={4}

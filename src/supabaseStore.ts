@@ -13,6 +13,8 @@ export type NormalizedCloudState = {
 };
 
 const API_BASE = "/api/cloud_state";
+const LOGIN_EVENT_API_BASE = "/api/login_event";
+const DASHBOARD_SNAPSHOT_API_BASE = "/api/dashboard_snapshot";
 const LOCAL_FALLBACK_STATUSES = new Set([404, 405, 503]);
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
@@ -190,5 +192,105 @@ export async function saveCloudState(
       throw new Error("cloud_not_configured");
     }
     throw new Error(`Cloud state save failed: ${response.status} ${errorBody}`);
+  }
+}
+
+export type LoginEventPayload = {
+  user_email: string;
+  login_at: string;
+  coaching_scenario_description: string;
+  wildcard_scenario_description: string;
+  level_selected: string;
+  ambiguity_level: number;
+  resistance_level: number;
+  emotional_volatility_level: number;
+  goal_conflict_level: number;
+  ai_agent_selected: string;
+  ai_model_selected: string;
+  session_duration_minutes: number;
+  timezone: string;
+};
+
+export async function saveLoginEvent(payload: LoginEventPayload): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch(LOGIN_EVENT_API_BASE, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch {
+    throw new Error("cloud_not_configured");
+  }
+
+  if (LOCAL_FALLBACK_STATUSES.has(response.status)) {
+    throw new Error("cloud_not_configured");
+  }
+  if (!response.ok) {
+    const errorBody = await response.text();
+    if (isFallbackBody(errorBody)) {
+      throw new Error("cloud_not_configured");
+    }
+    throw new Error(`Login event save failed: ${response.status} ${errorBody}`);
+  }
+}
+
+export type DashboardSnapshotPayload = {
+  user_email: string;
+  snapshot_at: string;
+  timezone: string;
+  ui_theme: string;
+  coach_level_selected: string;
+  ai_agent_selected: string;
+  session_duration_minutes: number;
+  scenario_current: string;
+  challenge_profile: unknown;
+  total_sessions: number;
+  average_performance_percent: number;
+  overall_average_score: number;
+  latest_average_score: number;
+  total_red_flags: number;
+  total_practice_minutes: number;
+  practice_goal_progress: number;
+  momentum_delta: number;
+  strongest_skill: string;
+  strongest_skill_score: number;
+  focus_skill: string;
+  focus_skill_score: number;
+  latest_quality_band: string;
+  latest_quality_score: number;
+  score_history_points: unknown;
+  skill_breakdown: unknown;
+  competency_momentum: unknown;
+  competency_trajectory: unknown;
+  learning_snapshot: unknown;
+  latest_feedback: unknown;
+  top_recommendations: unknown;
+  red_flag_frequency: unknown;
+};
+
+export async function saveDashboardSnapshot(
+  payload: DashboardSnapshotPayload,
+): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch(DASHBOARD_SNAPSHOT_API_BASE, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch {
+    throw new Error("cloud_not_configured");
+  }
+
+  if (LOCAL_FALLBACK_STATUSES.has(response.status)) {
+    throw new Error("cloud_not_configured");
+  }
+  if (!response.ok) {
+    const errorBody = await response.text();
+    if (isFallbackBody(errorBody)) {
+      throw new Error("cloud_not_configured");
+    }
+    throw new Error(`Dashboard snapshot save failed: ${response.status} ${errorBody}`);
   }
 }
