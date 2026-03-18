@@ -22,3 +22,13 @@ View your app in AI Studio: https://ai.studio/apps/05541fad-a7e4-4cf6-8d15-e3124
 4. Run `supabase/coach_state.sql` in your Supabase SQL editor (one-time setup)
 5. Run the app:
    `npm run dev`
+
+## Deploy On Streamlit
+
+1. Build a self-contained Streamlit bundle:
+   `npm run build:streamlit-bundle`
+2. In Streamlit Cloud, set the app file to:
+   `streamlit_app.py`
+3. Add a Streamlit secret for Gemini:
+   `GEMINI_API_KEY="your_key_here"`
+4. Deploy.
