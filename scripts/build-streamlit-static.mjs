@@ -5,15 +5,15 @@ import process from "node:process";
 const repoRoot = process.cwd();
 const distDir = path.join(repoRoot, "dist");
 const distIndexPath = path.join(distDir, "index.html");
-const outDir = path.join(repoRoot, "streamlit");
-const outPath = path.join(outDir, "kome_app_bundle.html");
+const streamlitDir = path.join(repoRoot, "streamlit");
+const bundlePath = path.join(streamlitDir, "kome_app_bundle.html");
 
 const indexHtml = await readFile(distIndexPath, "utf8");
 const scriptMatch = indexHtml.match(/<script[^>]+src="([^"]+)"[^>]*><\/script>/i);
 const cssMatch = indexHtml.match(/<link[^>]+href="([^"]+\.css)"[^>]*>/i);
 
 if (!scriptMatch || !cssMatch) {
-  throw new Error("Could not locate built script/css assets in dist/index.html. Run npm run build first.");
+  throw new Error("Could not parse dist/index.html for script/css asset paths.");
 }
 
 const jsPath = path.join(distDir, scriptMatch[1].replace(/^\//, ""));
@@ -34,15 +34,15 @@ ${cssContent}
   <body>
     <div id="root"></div>
     <script>
-      window.__KOME_GEMINI_API_KEY__ = window.__KOME_GEMINI_API_KEY__ || "";
+      window.__KOME_GEMINI_API_KEY__ = "__KOME_GEMINI_API_KEY__";
     </script>
-    <script type="module">
+    <script>
 ${jsContent}
     </script>
   </body>
 </html>
 `;
 
-await mkdir(outDir, { recursive: true });
-await writeFile(outPath, bundleHtml, "utf8");
-console.log(`Wrote ${outPath}`);
+await mkdir(streamlitDir, { recursive: true });
+await writeFile(bundlePath, bundleHtml, "utf8");
+console.log(`Wrote ${bundlePath}`);

@@ -32,3 +32,5 @@ View your app in AI Studio: https://ai.studio/apps/05541fad-a7e4-4cf6-8d15-e3124
 3. Add a Streamlit secret for Gemini:
    `GEMINI_API_KEY="your_key_here"`
 4. Deploy.
+
+This command generates `streamlit/kome_app_bundle.html` for Streamlit.

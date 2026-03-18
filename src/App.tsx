@@ -77,7 +77,11 @@ const runtimeGeminiKey =
   typeof (globalThis as { __KOME_GEMINI_API_KEY__?: unknown }).__KOME_GEMINI_API_KEY__ === "string"
     ? ((globalThis as { __KOME_GEMINI_API_KEY__?: string }).__KOME_GEMINI_API_KEY__ ?? "")
     : "";
-const GEMINI_API_KEY = (runtimeGeminiKey || process.env.GEMINI_API_KEY || '').trim();
+const queryGeminiKey =
+  typeof window === "object"
+    ? new URLSearchParams(window.location.search).get("gemini_api_key") ?? ""
+    : "";
+const GEMINI_API_KEY = (runtimeGeminiKey || queryGeminiKey || process.env.GEMINI_API_KEY || '').trim();
 const ai = hasUsableApiKey(GEMINI_API_KEY) ? new GoogleGenAI({ apiKey: GEMINI_API_KEY }) : null;
 const CONTENT_MODEL = "gemini-2.5-flash";
 const LIVE_AUDIO_MODEL = "gemini-2.5-flash-native-audio-preview-09-2025";

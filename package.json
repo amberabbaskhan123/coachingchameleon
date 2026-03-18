@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx server.ts",
     "build": "vite build",
-    "build:streamlit-bundle": "vite build && node scripts/build-streamlit-bundle.mjs",
+    "build:streamlit-bundle": "vite build && node scripts/build-streamlit-static.mjs",
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit"

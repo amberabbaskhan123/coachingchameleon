@@ -23,7 +23,6 @@ if not bundle_path.exists():
     )
     st.stop()
 
-bundle_html = bundle_path.read_text(encoding="utf-8")
 gemini_key = ""
 try:
     gemini_key = st.secrets.get("GEMINI_API_KEY", "")
@@ -33,14 +32,14 @@ except Exception:
 if not gemini_key:
     gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
 
-bootstrap = (
-    "<script>"
-    f"window.__KOME_GEMINI_API_KEY__ = {json.dumps(gemini_key)};"
-    "</script>"
+bundle_html = bundle_path.read_text(encoding="utf-8")
+rendered_html = bundle_html.replace(
+    "\"__KOME_GEMINI_API_KEY__\"",
+    json.dumps(gemini_key),
 )
 
 components.html(
-    bootstrap + bundle_html,
-    height=2200,
+    rendered_html,
+    height=920,
     scrolling=True,
 )
